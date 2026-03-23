@@ -12,7 +12,38 @@ Use only on systems, data, and models you are **authorized** to test.
 
 ## Install
 
-**From a clone of this repository**
+**Default (recommended): with Makefile**
+
+From this repository root:
+
+```bash
+make venv-install
+make venv-update
+make uv-install
+make uv-update
+```
+
+Use `make venv-install` / `make venv-update` when working inside the project `.venv`.
+
+**Second option: with uv**
+
+venv + pip interface:
+
+```bash
+uv venv && uv pip install -e .
+```
+
+Install `pyrit-cli` on your PATH (like `pipx`):
+
+```bash
+uv tool install --editable .
+```
+
+Reinstall after git pull: `uv tool install --editable --force .`. Remove: `uv tool uninstall pyrit-cli`.
+
+With the submodule lockfile: `uv sync` (installs into the project `.venv` when using uv's project layout).
+
+**Alternative: with pip**
 
 ```bash
 git clone git@github.com:emulateai-dev/pyrit_cli.git
@@ -25,37 +56,17 @@ pip install -e .
 **Developers** (tests + lint):
 
 ```bash
-pip install -e ".[dev]"
+pip install -e .
 ```
-
-**Optional** — Hugging Face dataset objectives (`--dataset hf:...`):
-
-```bash
-pip install -e ".[hf]"
-```
-
-**With uv** (venv + pip interface)
-
-```bash
-uv venv && uv pip install -e ".[dev]"
-```
-
-**With uv** (install `pyrit-cli` on your PATH, like pipx)
-
-```bash
-uv tool install --editable ".[hf]"
-```
-
-Reinstall after git pull: `uv tool install --editable --force ".[hf]"`. Remove: `uv tool uninstall pyrit-cli`.
-
-With the submodule **lockfile**: `uv sync --extra hf` (installs into the project `.venv` when using uv’s project layout).
 
 **With Poetry** (activate **your** workshop venv — e.g. `poetry shell` from your lab project — then from this repo directory)
 
 ```bash
 cd /path/to/pyrit_cli   # this repository root
-pip install -e ".[hf]"
+pip install -e .
 ```
+
+Phoenix/OpenTelemetry and Hugging Face dataset support are installed by default.
 
 **From PyPI** *(if published)*
 
@@ -93,6 +104,7 @@ If you used an **OpenAI-compatible** wizard (e.g. Groq), the model id in `openai
 | Area | Examples |
 |------|----------|
 | **Setup** | `pyrit-cli setup`, `setup guide`, `setup configure` |
+| **Tool lifecycle** | `pyrit-cli uv-install`, `pyrit-cli uv-update` |
 | **Help via LLM** | `pyrit-cli ask-ai "…"` (optional `--http-request-file` / `--http-response-sample`) |
 | **Discover** | `targets list`, `datasets list`, `datasets inspect`, `converters list`, `converters list-keys`, `converters run`, `jailbreak-templates list`, `scorers list` |
 | **Red team** | `redteam prompt-sending-attack`, `redteam red-teaming-attack`, `redteam tap-attack` |
@@ -137,6 +149,38 @@ pyrit-cli redteam red-teaming-attack \
 
 Full flags, HTTP victim options, provider env vars, and edge cases: **[src/pyrit_cli/HELP.md](src/pyrit_cli/HELP.md)** (also loaded by **`ask-ai`**).
 
+## Phoenix tracing (optional)
+
+Use this to capture pyrit-cli redteam HTTP traffic and spans in a local Phoenix instance.
+
+1. Start Phoenix:
+
+```bash
+make phoenix-up
+```
+
+2. Create local env and enable tracing:
+
+```bash
+cp .env.template .env.local
+# Edit .env.local and set:
+#   PHOENIX_TRACING_ENABLED=true
+#   PHOENIX_AUTO_INSTRUMENT=true
+```
+
+3. Install/update pyrit-cli in your environment:
+
+```bash
+pip install -e .
+```
+
+4. Run any redteam command, then open Phoenix:
+
+- UI: `http://localhost:16007`
+- OTLP HTTP traces endpoint: `http://localhost:16007/v1/traces`
+
+Fail-open behavior: if Phoenix is unavailable or observability deps are missing, pyrit-cli automatically disables tracing and continues without failing the command.
+
 ## Documentation
 
 | Document | Purpose |
@@ -149,10 +193,10 @@ Full flags, HTTP victim options, provider env vars, and edge cases: **[src/pyrit
 
 ## Development
 
-Install dev + HF extras, then run **pytest** (or use **Nox** to create a clean venv each time):
+Install and run **pytest** (or use **Nox** to create a clean venv each time):
 
 ```bash
-pip install -e ".[dev,hf]"
+pip install -e .
 pytest tests/
 pytest tests/ -m "not integration"   # skip HF download + Ollama (default Nox session)
 ruff check src/pyrit_cli tests

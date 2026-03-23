@@ -49,6 +49,24 @@ After configuring, `OPENAI_CHAT_ENDPOINT`, `OPENAI_CHAT_KEY`, and `OPENAI_CHAT_M
 
 ---
 
+## Tool lifecycle (`uv-install`, `uv-update`)
+
+From the `pyrit_cli` repository root:
+
+- `pyrit-cli uv-install` → runs `uv tool install --editable .`
+- `pyrit-cli uv-update` → runs `uv tool install --editable --force .`
+
+Use `uv-update` after local code changes when you want the `pyrit-cli` executable on PATH to pick up the latest source.
+
+Equivalent Makefile targets (run from `pyrit_cli` repo root):
+
+- `make venv-install`
+- `make venv-update`
+- `make uv-install`
+- `make uv-update`
+
+---
+
 ## `ask-ai` (natural language → shell command)
 
 ```bash
@@ -80,6 +98,7 @@ Loads **this** HELP text and calls an OpenAI-compatible **`/v1/chat/completions`
 | `--model` | Chat model for the helper call (default `gpt-4o-mini` or `OPENAI_CHAT_MODEL`). |
 | `--api-key` | Override API key for this call only. |
 | `--base-url` | Override API base URL for this call only. |
+| `--log-level` | Diagnostic verbosity for ask-ai resolution logs: `error` (default), `info`, `debug`. |
 | `--http-request-file` | Optional path to a raw HTTP template (for `--http-request`); max 64 KiB, UTF-8; contents sent to the API — redact secrets. |
 | `--http-response-sample` | Optional path to a sample response body to derive `--http-response-parser`; same limits and privacy note. |
 
@@ -122,6 +141,25 @@ pyrit-cli redteam prompt-sending-attack --target ollama:llama3.2 --objective "Re
 ```
 
 If your Ollama deployment requires an API key, set **`OLLAMA_API_KEY`** (otherwise the CLI sends a placeholder key, which is fine for typical local installs).
+
+---
+
+## Optional Phoenix telemetry (fail-open)
+
+`pyrit-cli` can export OpenTelemetry spans to Phoenix. This is optional and fail-open.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PHOENIX_TRACING_ENABLED` | `true` | Enable/disable tracing (`false` to force off). |
+| `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:16007/v1/traces` | OTLP HTTP traces endpoint used by Phoenix. |
+| `PHOENIX_PROJECT_NAME` | `pyrit-cli` | Project label attached to spans. |
+| `PHOENIX_AUTO_INSTRUMENT` | `true` | Use Phoenix auto-instrumentation (`phoenix.otel.register(..., auto_instrument=True)`). |
+
+Fail-open behavior:
+- If disabled: no telemetry setup is attempted.
+- If tracing dependencies are missing or setup fails: telemetry is auto-disabled, command still runs.
+
+For a local setup, start `docker-compose.phoenix.yml` and point to `http://127.0.0.1:16007/v1/traces`.
 
 ---
 
@@ -316,7 +354,7 @@ Shows a short preview of objectives before you pass them to **`--dataset`**. Spe
 |-----------|---------|
 | **`pyrit:seed_datasets/...`** | Load a **YAML / `.prompt`** file under PyRIT’s **`DATASETS_PATH`** (same roots as `datasets list`). |
 | **`pyrit:registered_name`** | Load a **built-in registered** dataset via PyRIT’s **`SeedDatasetProvider`** (e.g. `airt_illegal`, `harmbench`). Names match `SeedDatasetProvider.get_all_dataset_names()`; see [PyRIT: Loading built-in datasets](https://azure.github.io/PyRIT/code/datasets/loading-datasets/). Remote sets may download/cache on first use. |
-| **`hf:org/dataset`** | Stream the first **`--limit`** non-empty rows from **`--hf-split`** / **`--hf-column`** (requires `pip install 'pyrit-cli[hf]'`). |
+| **`hf:org/dataset`** | Stream the first **`--limit`** non-empty rows from **`--hf-split`** / **`--hf-column`**. |
 
 ```bash
 pyrit-cli datasets inspect pyrit:seed_datasets/local/airt/illegal.prompt --limit 3
@@ -383,8 +421,7 @@ pyrit-cli redteam prompt-sending-attack \
   --limit 3
 ```
 
-**D. Objectives from Hugging Face**  
-Requires optional install: `pip install 'pyrit-cli[hf]'` (or `datasets`).
+**D. Objectives from Hugging Face**
 
 ```bash
 pyrit-cli redteam prompt-sending-attack \

@@ -25,7 +25,7 @@ pip install -e .
 **Optional extras**
 
 - Developers (tests, lint): `pip install -e ".[dev]"`.
-- Hugging Face dataset objectives: `pip install -e ".[hf]"`.
+- Hugging Face dataset objectives are included by default.
 
 On PEP 668–locked systems, use a virtual environment, for example:
 
@@ -102,7 +102,7 @@ pyrit-cli scorers list
 ```
 
 - **`datasets list`** — file paths for **`--dataset pyrit:…`**.
-- **`datasets inspect`** — safe preview of seeds/rows (registered built-ins may download on first use; **`hf:`** needs **`pip install 'pyrit-cli[hf]'`**). See [HELP.md](../src/pyrit_cli/HELP.md) and [PyRIT: Loading built-in datasets](https://azure.github.io/PyRIT/code/datasets/loading-datasets/).
+- **`datasets inspect`** — safe preview of seeds/rows (registered built-ins may download on first use). See [HELP.md](../src/pyrit_cli/HELP.md) and [PyRIT: Loading built-in datasets](https://azure.github.io/PyRIT/code/datasets/loading-datasets/).
 - **`converters run`** — apply **stateless** converter keys (same as **`list-keys`**); repeat **`-c`** for stack order. Not for LLM or image converters.
 - **`jailbreak-templates list`** — YAML names for **`pyrit.datasets.TextJailBreak`** in Python. Combining jailbreak text with **image** converters (QR, overlays, etc.) is done in Python; see [PyRIT: Image converters](https://azure.github.io/PyRIT/code/converters/image-converters/) and [HELP.md](../src/pyrit_cli/HELP.md).
 
@@ -143,7 +143,7 @@ pyrit-cli redteam prompt-sending-attack \
   --limit 3
 ```
 
-With **`[hf]`** installed, Hugging Face columns work as **`--dataset hf:<id>`** (see HELP).
+Hugging Face columns work as **`--dataset hf:<id>`** (see HELP).
 
 ### 4.4 Multi-turn — basic
 

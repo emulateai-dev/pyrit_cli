@@ -34,7 +34,7 @@ def merge_write(path: Path, updates: dict[str, str], *, remove_keys: frozenset[s
     _atomic_write(path, "\n".join(lines) + "\n")
 
 
-def save_openai_native(openai_api_key: str, *, model: str = "gpt-4o") -> tuple[str, str]:
+def save_openai_native(openai_api_key: str, *, model: str = "gpt-4.1-mini") -> tuple[str, str]:
     d = ensure_pyrit_dir()
     env_main = d / ".env"
     env_local = d / ".env.local"

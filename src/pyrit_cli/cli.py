@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 
 from pyrit_cli import __version__
 from pyrit_cli.discover.converter_run import run_converter_pipeline_sync
@@ -37,6 +39,7 @@ from pyrit_cli.redteam.prompt_sending import collect_objectives, run_prompt_send
 from pyrit_cli.redteam.red_teaming import parse_memory_labels_json, run_red_teaming
 from pyrit_cli.redteam.tap_attack import run_tap_attack
 from pyrit_cli.redteam.targets import TARGET_SPEC_HELP
+from pyrit_cli.telemetry import setup_phoenix_tracing
 
 
 def _validate_http_flags(
@@ -103,6 +106,19 @@ app = typer.Typer(
 )
 
 
+def _run_uv_tool_install(force: bool) -> None:
+    cmd = ["uv", "tool", "install", "--editable"]
+    if force:
+        cmd.append("--force")
+    cmd.append(".")
+    try:
+        subprocess.run(cmd, check=True)
+    except FileNotFoundError as e:
+        raise RuntimeError("`uv` is not installed or not on PATH.") from e
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"uv command failed with exit code {e.returncode}") from e
+
+
 @app.callback()
 def _main(
     _version: bool = typer.Option(
@@ -114,7 +130,36 @@ def _main(
     ),
 ) -> None:
     """AISec workshop CLI for PyRIT setup and red-team flows."""
+    # Project-local env first (for local docker/services), then ~/.pyrit loaded by specific modules.
+    load_dotenv(Path.cwd() / ".env", override=False)
+    load_dotenv(Path.cwd() / ".env.local", override=True)
+    setup_phoenix_tracing(
+        service_name="pyrit-cli",
+        log=lambda s: typer.secho(s, err=True, fg=typer.colors.BRIGHT_BLACK),
+    )
     return
+
+
+@app.command("uv-install")
+def uv_install_cmd() -> None:
+    """Install pyrit-cli into uv tool environment from current repo."""
+    try:
+        _run_uv_tool_install(force=False)
+    except RuntimeError as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+    typer.secho("uv-install complete.", fg=typer.colors.GREEN)
+
+
+@app.command("uv-update")
+def uv_update_cmd() -> None:
+    """Reinstall/update pyrit-cli into uv tool environment from current repo."""
+    try:
+        _run_uv_tool_install(force=True)
+    except RuntimeError as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+    typer.secho("uv-update complete.", fg=typer.colors.GREEN)
 
 
 @app.command("ask-ai")
@@ -151,6 +196,11 @@ def ask_ai_cmd(
             "are sent to the chat API (redact secrets). Max 64 KiB, UTF-8."
         ),
     ),
+    log_level: str = typer.Option(
+        "error",
+        "--log-level",
+        help="ask-ai diagnostics verbosity: error | info | debug",
+    ),
 ) -> None:
     """Suggest a pyrit-cli command using bundled HELP.md and a chat API (authorized use only)."""
     typer.secho(
@@ -164,6 +214,12 @@ def ask_ai_cmd(
             err=True,
             fg=typer.colors.YELLOW,
         )
+    level = log_level.strip().lower()
+    if level not in {"error", "info", "debug"}:
+        typer.secho("--log-level must be one of: error, info, debug", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    show_diagnostics = level in {"info", "debug"}
+    show_http_diagnostics = level == "debug"
     try:
         typer.echo(
             run_ask_ai(
@@ -173,6 +229,13 @@ def ask_ai_cmd(
                 base_url=base_url,
                 http_request_file=http_request_file,
                 http_response_sample=http_response_sample,
+                diagnostics=show_diagnostics,
+                http_diagnostics=show_http_diagnostics,
+                diagnostics_logger=(
+                    (lambda s: typer.secho(s, err=True, fg=typer.colors.BLUE))
+                    if show_http_diagnostics
+                    else (lambda s: typer.secho(s, err=True, fg=typer.colors.BRIGHT_BLACK))
+                ),
             )
         )
     except (ValueError, FileNotFoundError, IsADirectoryError, RuntimeError) as e:
@@ -241,7 +304,7 @@ def setup_configure() -> None:
         if not key.strip():
             typer.secho("API key is required.", err=True, fg=typer.colors.RED)
             raise typer.Exit(code=1)
-        model = typer.prompt("Default chat model", default="gpt-4o")
+        model = typer.prompt("Default chat model", default="gpt-4.1-mini")
         m1, m2 = save_openai_native(key, model=model)
         typer.secho(m1, fg=typer.colors.GREEN)
         typer.secho(m2, fg=typer.colors.GREEN)

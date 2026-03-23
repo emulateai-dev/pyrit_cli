@@ -50,7 +50,7 @@ def load_objectives_from_hf(
         from datasets import load_dataset
     except ImportError as e:
         raise ImportError(
-            "Hugging Face datasets require: pip install 'pyrit-cli[hf]' or pip install datasets"
+            "Hugging Face datasets dependency is missing. Reinstall/upgrade pyrit-cli in this environment."
         ) from e
 
     kwargs: dict = {}

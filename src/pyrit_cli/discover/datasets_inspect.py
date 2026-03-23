@@ -87,7 +87,7 @@ def inspect_hf(
         from datasets import load_dataset
     except ImportError as e:
         raise ImportError(
-            "Hugging Face preview requires: pip install 'pyrit-cli[hf]' or pip install datasets"
+            "Hugging Face preview dependency is missing. Reinstall/upgrade pyrit-cli in this environment."
         ) from e
 
     kwargs: dict[str, Any] = {}

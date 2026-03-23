@@ -6,8 +6,9 @@ import json
 import os
 import urllib.error
 import urllib.request
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 
@@ -30,12 +31,30 @@ def load_pyrit_dotenv() -> None:
 def resolve_api_key(explicit: str | None) -> str:
     if explicit and explicit.strip():
         return explicit.strip()
-    for key in ("OPENAI_API_KEY", "OPENAI_CHAT_KEY"):
+    # Keep ask-ai aligned with setup/config conventions:
+    # prefer OPENAI_CHAT_* (PyRIT chat target vars), then native OpenAI key,
+    # then platform key used by OpenAI-compatible setup mode.
+    for key in ("OPENAI_CHAT_KEY", "OPENAI_API_KEY", "PLATFORM_OPENAI_CHAT_API_KEY"):
         v = os.environ.get(key, "").strip()
         if v and not v.startswith("${"):
             return v
     raise ValueError(
-        "No API key: pass --api-key or set OPENAI_API_KEY or OPENAI_CHAT_KEY in the environment "
+        "No API key: pass --api-key or set OPENAI_CHAT_KEY, OPENAI_API_KEY, or "
+        "PLATFORM_OPENAI_CHAT_API_KEY in the environment "
+        "(e.g. after `pyrit-cli setup configure` or in ~/.pyrit/.env)."
+    )
+
+
+def resolve_api_key_with_source(explicit: str | None) -> tuple[str, str]:
+    if explicit and explicit.strip():
+        return explicit.strip(), "--api-key"
+    for key in ("OPENAI_CHAT_KEY", "OPENAI_API_KEY", "PLATFORM_OPENAI_CHAT_API_KEY"):
+        v = os.environ.get(key, "").strip()
+        if v and not v.startswith("${"):
+            return v, key
+    raise ValueError(
+        "No API key: pass --api-key or set OPENAI_CHAT_KEY, OPENAI_API_KEY, or "
+        "PLATFORM_OPENAI_CHAT_API_KEY in the environment "
         "(e.g. after `pyrit-cli setup configure` or in ~/.pyrit/.env)."
     )
 
@@ -43,14 +62,59 @@ def resolve_api_key(explicit: str | None) -> str:
 def resolve_base_url(explicit: str | None) -> str:
     if explicit and explicit.strip():
         return explicit.strip().rstrip("/")
-    v = os.environ.get("OPENAI_CHAT_ENDPOINT", "").strip()
-    if v and not v.startswith("${"):
-        return v.rstrip("/")
+    for key in ("OPENAI_CHAT_ENDPOINT", "PLATFORM_OPENAI_CHAT_ENDPOINT"):
+        v = os.environ.get(key, "").strip()
+        if v and not v.startswith("${"):
+            return v.rstrip("/")
     return _DEFAULT_BASE
+
+
+def resolve_base_url_with_source(explicit: str | None) -> tuple[str, str]:
+    if explicit and explicit.strip():
+        return explicit.strip().rstrip("/"), "--base-url"
+    for key in ("OPENAI_CHAT_ENDPOINT", "PLATFORM_OPENAI_CHAT_ENDPOINT"):
+        v = os.environ.get(key, "").strip()
+        if v and not v.startswith("${"):
+            return v.rstrip("/"), key
+    return _DEFAULT_BASE, "default"
+
+
+def resolve_model_with_source(explicit: str | None) -> tuple[str, str]:
+    if explicit and explicit.strip():
+        return explicit.strip(), "--model"
+    for key in ("OPENAI_CHAT_MODEL", "PLATFORM_OPENAI_CHAT_GPT4O_MODEL"):
+        v = os.environ.get(key, "").strip()
+        if v and not v.startswith("${"):
+            return v, key
+    return _DEFAULT_MODEL, "default"
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return "(empty)"
+    if len(value) <= 8:
+        return "****"
+    return value[:4] + "…" + value[-2:]
 
 
 def _chat_completions_url(base: str) -> str:
     return f"{base.rstrip('/')}/chat/completions"
+
+
+def _start_optional_span(name: str):
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        return nullcontext()
+    tracer = trace.get_tracer("pyrit_cli.ask_ai")
+    return tracer.start_as_current_span(name)
+
+
+def _truncate(value: str, limit: int = 1200) -> str:
+    s = value.strip()
+    if len(s) <= limit:
+        return s
+    return s[:limit] + "...(truncated)"
 
 
 def read_ask_ai_file(path: Path, *, max_bytes: int = ASK_AI_ATTACHMENT_MAX_BYTES) -> str:
@@ -167,6 +231,9 @@ def suggest_command(
     base_url: str,
     http_request_file: Path | None = None,
     http_response_sample: Path | None = None,
+    diagnostics: bool = False,
+    http_diagnostics: bool = False,
+    diagnostics_logger: Callable[[str], None] | None = None,
 ) -> str:
     help_md = load_help_markdown()
     http_ctx = http_request_file is not None or http_response_sample is not None
@@ -185,21 +252,82 @@ def suggest_command(
         ],
         "temperature": 0.45,
     }
-    data = json.dumps(body).encode("utf-8")
+    request_json = json.dumps(body)
+    data = request_json.encode("utf-8")
     req = urllib.request.Request(
         _chat_completions_url(base_url),
         data=data,
         headers={
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "pyrit-cli/0.1.0 (+https://github.com/emulateai-dev/pyrit_cli)",
             "Authorization": f"Bearer {api_key}",
         },
         method="POST",
     )
+    if diagnostics and http_diagnostics and diagnostics_logger:
+        diagnostics_logger("ask-ai http request method: POST")
+        diagnostics_logger(f"ask-ai http request url: {_chat_completions_url(base_url)}")
+        diagnostics_logger("ask-ai http request headers: Content-Type=application/json, Authorization=Bearer ****")
+        diagnostics_logger(f"ask-ai http request body bytes: {len(data)}")
+    span_attrs = {
+        "llm.provider": "openai_compatible",
+        "llm.model_name": model,
+        "http.method": "POST",
+        "http.url": _chat_completions_url(base_url),
+    }
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        with _start_optional_span("ask_ai.chat_completions") as span:
+            if span is not None:
+                for k, v in span_attrs.items():
+                    span.set_attribute(k, v)
+                span.set_attribute("ask_ai.user_goal", _truncate(user_goal, 500))
+                span.set_attribute("ask_ai.request.body_bytes", len(data))
+                span.set_attribute("ask_ai.request.has_http_request_file", http_request_file is not None)
+                span.set_attribute(
+                    "ask_ai.request.has_http_response_sample", http_response_sample is not None
+                )
+                # Include request context directly in attributes so it is visible in Phoenix Trace Details.
+                span.set_attribute("ask_ai.request.system_preview", _truncate(system, 2500))
+                span.set_attribute("ask_ai.request.user_preview", _truncate(user, 2500))
+                span.set_attribute("ask_ai.request.preview", _truncate(request_json, 6000))
+                span.add_event(
+                    "ask_ai.request",
+                    {
+                        "ask_ai.user_goal": _truncate(user_goal, 500),
+                        "ask_ai.request_body_bytes": len(data),
+                        "ask_ai.request_system_preview": _truncate(system, 1200),
+                        "ask_ai.request_user_preview": _truncate(user, 1200),
+                        "ask_ai.request_preview": _truncate(request_json, 2000),
+                        "ask_ai.request_has_http_request_file": http_request_file is not None,
+                        "ask_ai.request_has_http_response_sample": http_response_sample is not None,
+                    },
+                )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                if diagnostics and http_diagnostics and diagnostics_logger:
+                    diagnostics_logger(f"ask-ai http response status: {getattr(resp, 'status', 'unknown')}")
+                    for k, v in resp.headers.items():
+                        diagnostics_logger(f"ask-ai http response header: {k}: {v}")
+                raw_payload = resp.read().decode("utf-8")
+                payload = json.loads(raw_payload)
+                if span is not None:
+                    span.set_attribute("http.status_code", int(getattr(resp, "status", 0) or 0))
+                    span.set_attribute("ask_ai.response.body_bytes", len(raw_payload.encode("utf-8")))
+                    span.set_attribute("ask_ai.response.preview", _truncate(raw_payload, 1000))
+                    span.add_event(
+                        "ask_ai.response",
+                        {
+                            "ask_ai.response_body_bytes": len(raw_payload.encode("utf-8")),
+                            "ask_ai.response_preview": _truncate(raw_payload, 1000),
+                        },
+                    )
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
+        if diagnostics and http_diagnostics and diagnostics_logger:
+            diagnostics_logger(f"ask-ai http error status: {e.code}")
+            for k, v in e.headers.items():
+                diagnostics_logger(f"ask-ai http error header: {k}: {v}")
+            diagnostics_logger(f"ask-ai http error body: {detail[:2000]}")
         raise RuntimeError(f"Chat API HTTP {e.code}: {detail[:800]}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"Chat API request failed: {e}") from e
@@ -219,11 +347,21 @@ def run_ask_ai(
     base_url: str | None,
     http_request_file: Path | None = None,
     http_response_sample: Path | None = None,
+    diagnostics: bool = False,
+    http_diagnostics: bool = False,
+    diagnostics_logger: Callable[[str], None] | None = None,
 ) -> str:
     load_pyrit_dotenv()
-    key = resolve_api_key(api_key)
-    base = resolve_base_url(base_url)
-    m = (model or os.environ.get("OPENAI_CHAT_MODEL") or _DEFAULT_MODEL).strip()
+    key, key_source = resolve_api_key_with_source(api_key)
+    base, base_source = resolve_base_url_with_source(base_url)
+    m, model_source = resolve_model_with_source(model)
+    if diagnostics and diagnostics_logger:
+        diagnostics_logger(f"ask-ai resolved base URL: {base} (source: {base_source})")
+        diagnostics_logger(f"ask-ai resolved model: {m} (source: {model_source})")
+        diagnostics_logger(
+            f"ask-ai resolved API key source: {key_source}, value: {_mask_secret(key)}"
+        )
+        diagnostics_logger(f"ask-ai request URL: {_chat_completions_url(base)}")
     return suggest_command(
         user_goal,
         model=m,
@@ -231,4 +369,7 @@ def run_ask_ai(
         base_url=base,
         http_request_file=http_request_file,
         http_response_sample=http_response_sample,
+        diagnostics=diagnostics,
+        http_diagnostics=http_diagnostics,
+        diagnostics_logger=diagnostics_logger,
     )
