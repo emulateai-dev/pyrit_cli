@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from pyrit.common.path import DATASETS_PATH
+from pyrit.datasets import TextJailBreak
 
-from pyrit.executor.attack import AttackConverterConfig, ConsoleAttackResultPrinter, PromptSendingAttack
-from pyrit.models import SeedDataset
+from pyrit.executor.attack import (
+    AttackConverterConfig,
+    AttackExecutor,
+    AttackScoringConfig,
+    ConsoleAttackResultPrinter,
+    PromptSendingAttack,
+)
+from pyrit.models import Message, SeedDataset
+from pyrit.score import SelfAskRefusalScorer, SelfAskTrueFalseScorer, TrueFalseInverterScorer, TrueFalseQuestion
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
 from pyrit_cli.redteam.http_target_cli import (
@@ -19,7 +29,7 @@ from pyrit_cli.redteam.http_target_cli import (
     is_http_victim_spec,
     parse_objective_http_url,
 )
-from pyrit_cli.redteam.targets import openai_chat_from_spec
+from pyrit_cli.redteam.targets import openai_chat_from_spec, parse_target_spec
 
 
 def resolve_pyrit_dataset_path(spec: str) -> Path:
@@ -56,7 +66,13 @@ def load_objectives_from_hf(
     kwargs: dict = {}
     if config:
         kwargs["name"] = config
-    ds = load_dataset(repo_id, split=split, **kwargs)
+    with warnings.catch_warnings():
+        # Keep CLI output focused; users can still opt in to HF auth for better rate limits.
+        warnings.filterwarnings(
+            "ignore",
+            message="Warning: You are sending unauthenticated requests to the HF Hub.*",
+        )
+        ds = load_dataset(repo_id, split=split, **kwargs)
     col = ds[column]
     return [str(x) for x in col if x is not None and str(x).strip()]
 
@@ -98,6 +114,90 @@ def collect_objectives(
     return obs
 
 
+def _parse_kv_pairs(raw_pairs: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in raw_pairs:
+        if "=" not in raw:
+            raise ValueError(f"Invalid --jailbreak-template-param {raw!r}; expected key=value")
+        key, value = raw.split("=", 1)
+        k = key.strip()
+        if not k:
+            raise ValueError(f"Invalid --jailbreak-template-param {raw!r}; key cannot be empty")
+        out[k] = value
+    return out
+
+
+def _build_scoring_config(
+    *,
+    mode: str,
+    preset: str,
+    true_description: str | None,
+    scorer_chat_target_spec: str | None,
+    attack_target_spec: str,
+):
+    m = mode.strip().lower()
+    if m not in {"auto", "off", "configured"}:
+        raise ValueError("--scoring-mode must be one of: auto, off, configured")
+    if m == "off":
+        return None
+
+    if scorer_chat_target_spec:
+        scorer_spec = scorer_chat_target_spec
+    else:
+        if is_http_victim_spec(attack_target_spec):
+            raise ValueError(
+                "When scoring is enabled for HTTP victim targets, set --scorer-chat-target "
+                "to a chat model spec (e.g. openai:gpt-4o-mini)."
+            )
+        provider, _ = parse_target_spec(attack_target_spec)
+        scorer_spec = attack_target_spec
+        # Match red-teaming behavior: for local/non-JSON victims, prefer OPENAI_CHAT_MODEL fallback.
+        if provider in {"ollama", "lmstudio", "compat"}:
+            model = (
+                os.environ.get("OPENAI_CHAT_MODEL", "")
+                or os.environ.get("PLATFORM_OPENAI_CHAT_GPT4O_MODEL", "")
+            ).strip()
+            if model and not model.startswith("${"):
+                scorer_spec = f"openai:{model}"
+
+    scorer_chat = openai_chat_from_spec(scorer_spec)
+
+    p = preset.strip().lower().replace("_", "-")
+    if m == "auto":
+        p = "non-refusal"
+
+    if p == "non-refusal":
+        objective_scorer = TrueFalseInverterScorer(scorer=SelfAskRefusalScorer(chat_target=scorer_chat))
+    elif p == "refusal":
+        objective_scorer = SelfAskRefusalScorer(chat_target=scorer_chat)
+    elif p == "self-ask-tf":
+        if not (true_description and true_description.strip()):
+            raise ValueError("--true-description is required when --scorer-preset is self-ask-tf")
+        objective_scorer = SelfAskTrueFalseScorer(
+            chat_target=scorer_chat,
+            true_false_question=TrueFalseQuestion(true_description=true_description.strip()),
+        )
+    else:
+        raise ValueError("--scorer-preset must be one of: non-refusal, refusal, self-ask-tf")
+
+    return AttackScoringConfig(objective_scorer=objective_scorer)
+
+
+def _build_prepended_conversation(
+    *,
+    jailbreak_template: str | None,
+    jailbreak_template_params: list[str],
+) -> list[Message] | None:
+    if not jailbreak_template:
+        if jailbreak_template_params:
+            raise ValueError("--jailbreak-template-param requires --jailbreak-template")
+        return None
+    kwargs = _parse_kv_pairs(jailbreak_template_params)
+    jailbreak = TextJailBreak(template_file_name=jailbreak_template)
+    system_prompt = jailbreak.get_jailbreak_system_prompt(**kwargs)
+    return [Message.from_system_prompt(system_prompt)]
+
+
 async def run_prompt_sending_async(
     target: str,
     objectives: Sequence[str],
@@ -110,6 +210,12 @@ async def run_prompt_sending_async(
     http_use_tls: bool = True,
     http_json_body_converter: bool = False,
     http_model_name: str = "",
+    scoring_mode: str = "auto",
+    scorer_preset: str = "non-refusal",
+    true_description: str | None = None,
+    scorer_chat_target: str | None = None,
+    jailbreak_template: str | None = None,
+    jailbreak_template_params: list[str] | None = None,
 ) -> None:
     await initialize_pyrit_async(memory_db_type=IN_MEMORY)  # type: ignore[arg-type]
 
@@ -134,11 +240,31 @@ async def run_prompt_sending_async(
     else:
         chat_target = openai_chat_from_spec(target)
 
-    attack = PromptSendingAttack(objective_target=chat_target, attack_converter_config=conv_cfg)
+    scoring_cfg = _build_scoring_config(
+        mode=scoring_mode,
+        preset=scorer_preset,
+        true_description=true_description,
+        scorer_chat_target_spec=scorer_chat_target,
+        attack_target_spec=target,
+    )
+    prepended_conversation = _build_prepended_conversation(
+        jailbreak_template=jailbreak_template,
+        jailbreak_template_params=list(jailbreak_template_params or []),
+    )
+    attack = PromptSendingAttack(
+        objective_target=chat_target,
+        attack_converter_config=conv_cfg,
+        attack_scoring_config=scoring_cfg,
+    )
+    executor = AttackExecutor()
     printer = ConsoleAttackResultPrinter()
 
-    for obj in objectives:
-        result = await attack.execute_async(objective=obj)  # type: ignore[misc]
+    results = await executor.execute_attack_async(
+        attack=attack,
+        objectives=list(objectives),
+        prepended_conversation=prepended_conversation,
+    )
+    for result in results:
         await printer.print_result_async(result)
 
 

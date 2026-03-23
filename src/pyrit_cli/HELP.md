@@ -150,10 +150,10 @@ If your Ollama deployment requires an API key, set **`OLLAMA_API_KEY`** (otherwi
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `PHOENIX_TRACING_ENABLED` | `true` | Enable/disable tracing (`false` to force off). |
+| `PHOENIX_TRACING_ENABLED` | `false` | Enable/disable tracing (`true` to turn on). |
 | `PHOENIX_COLLECTOR_ENDPOINT` | `http://localhost:16007/v1/traces` | OTLP HTTP traces endpoint used by Phoenix. |
 | `PHOENIX_PROJECT_NAME` | `pyrit-cli` | Project label attached to spans. |
-| `PHOENIX_AUTO_INSTRUMENT` | `true` | Use Phoenix auto-instrumentation (`phoenix.otel.register(..., auto_instrument=True)`). |
+| `PHOENIX_AUTO_INSTRUMENT` | `false` | Use Phoenix auto-instrumentation (`phoenix.otel.register(..., auto_instrument=True)`). |
 
 Fail-open behavior:
 - If disabled: no telemetry setup is attempted.
@@ -382,13 +382,19 @@ Maps to PyRIT **`PromptSendingAttack`**: one user-style objective per execution 
 | `--hf-column` | no | Column name for objectives (default `text`) |
 | `--hf-config` | no | HF dataset config / name when needed |
 | `--limit` | no | Cap number of objectives after load (min 1) |
+| `--scoring-mode` | no | `auto` (default), `off`, `configured` |
+| `--scorer-preset` | no | `non-refusal`, `refusal`, `self-ask-tf` |
+| `--true-description` | with `self-ask-tf` | Criterion for True |
+| `--scorer-chat-target` | no | Scorer LLM target; required for scoring with HTTP victims. For local targets (`ollama`, `lmstudio`, `compat`), default scorer may auto-fallback to `openai:${OPENAI_CHAT_MODEL}` when set |
+| `--jailbreak-template` | no | Optional `TextJailBreak` template name (prepended system prompt) |
+| `--jailbreak-template-param` | no | Repeatable `key=value` parameter for template rendering |
 
 You must supply **either** `--objective` **or** `--dataset`, not both.
 
 ### Flavors
 
 **A. One-shot string (simplest)**  
-Send a single objective; result is printed with `ConsoleAttackResultPrinter` (outcome may be “undetermined” if no scorer is configured — same as basic PyRIT examples).
+Send a single objective; default scoring is enabled (`--scoring-mode auto`) using non-refusal as success.
 
 ```bash
 pyrit-cli redteam prompt-sending-attack \
@@ -437,6 +443,19 @@ Use any benign `pyrit:` YAML or HF column suitable for your policy; `--limit` ke
 
 **F. HTTP victim (`HTTPTarget`)**  
 Same as the [HTTP victim flags](#http-victim-flags-with---target-http-or---objective-target-http) section: raw request file + response parser. Typical JSON chat APIs use `json:choices[0].message.content` and often `--http-json-body-converter`.
+
+**G. Prepend a jailbreak template**  
+Uses PyRIT `TextJailBreak` to build a system prompt prepended to every objective in the run.
+
+```bash
+pyrit-cli redteam prompt-sending-attack \
+  --target openai:gpt-4o-mini \
+  --dataset hf:PKU-Alignment/BeaverTails-Evaluation \
+  --hf-split test \
+  --hf-column prompt \
+  --limit 10 \
+  --jailbreak-template dan_1.yaml
+```
 
 ---
 
@@ -658,7 +677,7 @@ Not exposed in the CLI today (use Python / notebooks for these):
 - Custom **`AttackAdversarialConfig.seed_prompt`** (still default template with `{{ objective }}`).
 - Custom **filesystem** `system_prompt_path` beyond the `--rta-prompt` enum.
 - Extra OpenAI-compatible hosts **beyond** `compat:` + env (no arbitrary per-flag URL without `compat` or code changes).
-- **`HTTPTarget`** is only wired for **`prompt-sending-attack`** and **`red-teaming-attack`** (victim **`http`** or an **http(s) URL** + `--http-*` flags). Other non-chat victims (`AzureMLChatTarget`, `TextTarget`, `OpenAIImageTarget`, …), **prepended conversations**, and advanced HTTP flows still need Python.
+- **`HTTPTarget`** is only wired for **`prompt-sending-attack`** and **`red-teaming-attack`** (victim **`http`** or an **http(s) URL** + `--http-*` flags). Other non-chat victims (`AzureMLChatTarget`, `TextTarget`, `OpenAIImageTarget`, …) and advanced HTTP flows still need Python.
 - **LLM-backed** prompt converters.
 - **`tap-attack`**: no `--request-converter` / `--response-converter` wiring yet (use Python for `AttackConverterConfig`).
 - **`datasets inspect`**: previews only (text truncation); does not run attacks. Registered built-ins may download/cache on first fetch (same as PyRIT `SeedDatasetProvider`).

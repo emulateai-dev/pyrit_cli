@@ -401,6 +401,36 @@ def redteam_prompt_sending(
         "--http-model-name",
         help="Optional model label for HTTPTarget identifier metadata.",
     ),
+    scoring_mode: str = typer.Option(
+        "auto",
+        "--scoring-mode",
+        help="auto | off | configured. auto uses non-refusal objective scoring.",
+    ),
+    scorer_preset: str = typer.Option(
+        "non-refusal",
+        "--scorer-preset",
+        help="non-refusal | refusal | self-ask-tf (used when scoring mode is configured).",
+    ),
+    true_description: str | None = typer.Option(
+        None,
+        "--true-description",
+        help="Criterion for True when --scorer-preset=self-ask-tf.",
+    ),
+    scorer_chat_target: str | None = typer.Option(
+        None,
+        "--scorer-chat-target",
+        help=f"Scorer LLM target; required for HTTP victim scoring. {TARGET_SPEC_HELP}",
+    ),
+    jailbreak_template: str | None = typer.Option(
+        None,
+        "--jailbreak-template",
+        help="Optional TextJailBreak template filename (e.g. dan_1.yaml) prepended as system prompt.",
+    ),
+    jailbreak_template_param: list[str] | None = typer.Option(
+        None,
+        "--jailbreak-template-param",
+        help="Template parameter as key=value (repeatable). Requires --jailbreak-template.",
+    ),
 ) -> None:
     try:
         objectives = collect_objectives(
@@ -448,6 +478,12 @@ def redteam_prompt_sending(
             http_use_tls=http_use_tls,
             http_json_body_converter=http_json_body_converter,
             http_model_name=http_model_name,
+            scoring_mode=scoring_mode,
+            scorer_preset=scorer_preset,
+            true_description=true_description,
+            scorer_chat_target=scorer_chat_target,
+            jailbreak_template=jailbreak_template,
+            jailbreak_template_params=list(jailbreak_template_param or []),
         )
     except Exception as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)

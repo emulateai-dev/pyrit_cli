@@ -34,9 +34,11 @@ def setup_phoenix_tracing(
 
         _TRACE_STATE["initialized"] = True
 
-        if not _env_enabled("PHOENIX_TRACING_ENABLED", default=True):
+        enabled_by_env = os.getenv("PHOENIX_TRACING_ENABLED")
+        if not _env_enabled("PHOENIX_TRACING_ENABLED", default=False):
             _TRACE_STATE["enabled"] = False
-            if log:
+            # Stay quiet by default; only log when user explicitly set the env var.
+            if log and enabled_by_env is not None:
                 log("Phoenix tracing disabled via PHOENIX_TRACING_ENABLED.")
             return False
 
@@ -52,7 +54,6 @@ def setup_phoenix_tracing(
 
         try:
             from phoenix.otel import register
-            from openinference.instrumentation.langchain import LangChainInstrumentor
         except Exception as exc:
             _TRACE_STATE["enabled"] = False
             if log:
@@ -60,7 +61,7 @@ def setup_phoenix_tracing(
             return False
 
         try:
-            auto_instrument = _env_enabled("PHOENIX_AUTO_INSTRUMENT", default=True)
+            auto_instrument = _env_enabled("PHOENIX_AUTO_INSTRUMENT", default=False)
             tracer_provider = register(
                 project_name=project_name,
                 endpoint=endpoint,
@@ -75,6 +76,8 @@ def setup_phoenix_tracing(
                 pass
             if find_spec("langchain_core") is not None:
                 try:
+                    from openinference.instrumentation.langchain import LangChainInstrumentor
+
                     LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
                 except Exception:
                     pass

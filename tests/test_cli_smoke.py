@@ -75,9 +75,15 @@ def test_red_teaming_help() -> None:
 
 
 def test_prompt_sending_attack_help() -> None:
-    r = runner.invoke(app, ["redteam", "prompt-sending-attack", "--help"])
+    r = runner.invoke(
+        app,
+        ["redteam", "prompt-sending-attack", "--help"],
+        env={"COLUMNS": "200", "LINES": "60"},
+    )
     assert r.exit_code == 0
     assert "--target" in r.stdout
+    assert "--scoring-mode" in r.stdout
+    assert "--jailbreak-template" in r.stdout
 
 
 def test_ask_ai_help() -> None:
