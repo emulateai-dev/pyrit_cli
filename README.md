@@ -1,80 +1,114 @@
 # pyrit-cli
 
-Workshop CLI for PyRIT: **configure** credentials (`setup configure`), **ask-ai** for natural-language command suggestions (uses bundled [HELP.md](src/pyrit_cli/HELP.md) + a chat API), inspect `~/.pyrit`, run **single-turn** / **multi-turn** / **TAP** attacks ([PyRIT docs](https://azure.github.io/PyRIT/)), and list **datasets**, **converters**, **scorers**, and **targets**.
+**pyrit-cli** is a command-line tool for security workshops and authorized red-teaming with [PyRIT](https://azure.github.io/PyRIT/). It wraps common flows: credential setup, dataset and converter discovery, single-turn and multi-turn attacks, TAP, optional HTTP victims, and an **`ask-ai`** helper that uses bundled documentation plus a chat API to suggest commands.
 
-**Documentation (install → red team → ask-ai, basic → advanced):** see [docs/README.md](docs/README.md) and the linear [docs/workshop-track.md](docs/workshop-track.md). **Every flag:** [HELP.md](src/pyrit_cli/HELP.md).
+Use only on systems, data, and models you are **authorized** to test.
 
-Use only on systems and models you are authorized to test.
+## Requirements
+
+- **Python** 3.10–3.13 (see `requires-python` in `pyproject.toml`)
+- API access to any LLM providers you target (OpenAI, Groq, Ollama, etc., depending on flags)
+- A [PyRIT](https://github.com/Azure/PyRIT)-compatible install (pulled in as a dependency)
 
 ## Install
 
+**From a clone of this repository**
+
 ```bash
-cd labs/setup/pyrit/pyrit_cli
+git clone git@github.com:emulateai-dev/pyrit_cli.git
+cd pyrit_cli
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .
-pip install -e ".[dev]"   # pytest, ruff
-# Optional: Hugging Face datasets for --dataset hf:...
+```
+
+**Developers** (tests + lint):
+
+```bash
+pip install -e ".[dev]"
+```
+
+**Optional** — Hugging Face dataset objectives (`--dataset hf:...`):
+
+```bash
 pip install -e ".[hf]"
 ```
 
-On PEP 668 systems, use a venv or `uv venv && uv pip install -e ".[dev]"`.
-
-Configure credentials interactively or by hand:
+**With uv**
 
 ```bash
-pyrit-cli setup configure   # OpenAI or OpenAI-compatible (Groq-style); writes ~/.pyrit/.env + .env.local
+uv venv && uv pip install -e ".[dev]"
 ```
 
-After **OpenAI-compatible** setup, use **`--target openai:<model>`** with a model id your host supports (e.g. Groq’s `llama-3.3-70b-versatile`), not OpenAI-only names unless that backend exposes them.
-
-Or follow the parent [README](../README.md). `OpenAIChatTarget` reads `OPENAI_CHAT_*` from `.env.local` (often mirroring `OPENAI_API_KEY` or `PLATFORM_*`).
-
-**ask-ai** loads the same HELP reference as humans and calls an OpenAI-compatible `/v1/chat/completions` endpoint using `OPENAI_API_KEY` or `OPENAI_CHAT_KEY` (and optional `OPENAI_CHAT_ENDPOINT`). Example:
+**From PyPI** *(if published)*
 
 ```bash
-pyrit-cli ask-ai "I want a one-shot test against gpt-4o-mini"
+pip install pyrit-cli
 ```
 
-## Discover
+## Quick start
+
+1. Configure environment (interactive wizard; writes under `~/.pyrit/`):
+
+   ```bash
+   pyrit-cli setup configure
+   ```
+
+2. Check status:
+
+   ```bash
+   pyrit-cli setup
+   pyrit-cli setup guide
+   ```
+
+3. Run a minimal **single-turn** check (adjust `--target` to your model and backend):
+
+   ```bash
+   pyrit-cli redteam prompt-sending-attack \
+     --target openai:gpt-4o-mini \
+     --objective "Reply with exactly: OK"
+   ```
+
+If you used an **OpenAI-compatible** wizard (e.g. Groq), the model id in `openai:<model>` must exist on that host (see [HELP.md](src/pyrit_cli/HELP.md) and [docs/workshop-track.md](docs/workshop-track.md)).
+
+## What you can run
+
+| Area | Examples |
+|------|----------|
+| **Setup** | `pyrit-cli setup`, `setup guide`, `setup configure` |
+| **Help via LLM** | `pyrit-cli ask-ai "…"` (optional `--http-request-file` / `--http-response-sample`) |
+| **Discover** | `targets list`, `datasets list`, `datasets inspect`, `converters list`, `converters list-keys`, `converters run`, `jailbreak-templates list`, `scorers list` |
+| **Red team** | `redteam prompt-sending-attack`, `redteam red-teaming-attack`, `redteam tap-attack` |
+
+### Stateless converters on arbitrary text
+
+Same keys as `converters list-keys` / `--request-converter` (repeat `-c` for a stack):
 
 ```bash
-pyrit-cli converters list              # modalities table (after PyRIT init)
-pyrit-cli converters list --json
-pyrit-cli converters list-keys         # stateless keys for --request-converter
-pyrit-cli scorers list
-pyrit-cli targets list
-pyrit-cli datasets list                # paths for --dataset pyrit:...
-pyrit-cli datasets list --glob '*airt*'
-pyrit-cli datasets inspect pyrit:seed_datasets/local/airt/illegal.prompt --limit 3
-pyrit-cli datasets inspect pyrit:airt_illegal --limit 2   # registered built-in (may download)
+pyrit-cli converters run -c rot13 "Hello"
+echo "plain" | pyrit-cli converters run -c base64
 ```
 
-Further reading: [Converters](https://azure.github.io/PyRIT/code/converters/converters/), [Scoring](https://azure.github.io/PyRIT/code/scoring/scoring/).
+### Jailbreak template names (for Python / PyRIT)
 
-## Setup
+Lists YAML basenames used with `pyrit.datasets.TextJailBreak`:
 
 ```bash
-pyrit-cli setup              # masked env status
-pyrit-cli setup guide        # Option A / B summary
-pyrit-cli setup configure    # interactive wizard (OpenAI vs compatible API)
+pyrit-cli jailbreak-templates list
+pyrit-cli jailbreak-templates list --json
 ```
 
-## Red team
+Image and LLM-backed converters are **not** run through this CLI; use PyRIT in Python (see [HELP.md](src/pyrit_cli/HELP.md)).
 
-**Single-turn**
+### Local Ollama (example)
 
 ```bash
-pyrit-cli redteam prompt-sending-attack --target openai:gpt-4o --objective "Say hello in one sentence."
-pyrit-cli redteam prompt-sending-attack --target openai:gpt-4o --dataset pyrit:seed_datasets/local/airt/illegal.prompt --limit 2
-pyrit-cli redteam prompt-sending-attack --target openai:gpt-4o --dataset hf:imdb --hf-split train --hf-column text --limit 1
+pyrit-cli redteam prompt-sending-attack \
+  --target ollama:llama3.2 \
+  --objective "Reply with exactly: OK"
 ```
 
-**Local Ollama** (OpenAI-compatible `/v1` on `127.0.0.1:11434` by default; use `OLLAMA_HOST` for a remote server — see [HELP.md](src/pyrit_cli/HELP.md)):
-
-```bash
-pyrit-cli redteam prompt-sending-attack --target ollama:llama3.2 --objective "Reply with exactly: OK"
-```
-
-**Multi-turn** (benign example: scorer checks that the model answered a simple factual ask)
+### Multi-turn (example)
 
 ```bash
 pyrit-cli redteam red-teaming-attack \
@@ -84,15 +118,29 @@ pyrit-cli redteam red-teaming-attack \
   --max-turns 3
 ```
 
-Same flow against a local model: `--objective-target ollama:llama3.2` (and the same `--objective` / `--true-description` / `--max-turns` pattern).
+Full flags, HTTP victim options, provider env vars, and edge cases: **[src/pyrit_cli/HELP.md](src/pyrit_cli/HELP.md)** (also loaded by **`ask-ai`**).
 
-Optional: `--adversarial-target openai:...`, `--scorer-preset self-ask-refusal`, `--rta-prompt text_generation`, `--memory-labels-json '{"lab":"demo"}'`, stacked converters `--request-converter base64 --request-converter rot13`, `--include-adversarial-conversation`.
+## Documentation
 
-On PyRIT **0.11.x**, `--refusal-mode` is ignored for `self-ask-refusal` (fixed prompt paths only). Newer PyRIT versions may support `default` / `strict` refusal prompts.
+| Document | Purpose |
+|----------|---------|
+| [docs/README.md](docs/README.md) | How the docs fit together |
+| [docs/workshop-track.md](docs/workshop-track.md) | Linear path: install → setup → discover → red team → ask-ai |
+| [src/pyrit_cli/HELP.md](src/pyrit_cli/HELP.md) | Complete CLI reference |
 
-## Tests
+**PyRIT library:** [https://azure.github.io/PyRIT/](https://azure.github.io/PyRIT/)
+
+## Development
 
 ```bash
-cd labs/setup/pyrit/pyrit_cli
 pytest tests/
+ruff check src/pyrit_cli tests
 ```
+
+## License
+
+Package licensing follows the repository that contains this project. PyRIT is licensed separately by Microsoft; see the [PyRIT repository](https://github.com/Azure/PyRIT).
+
+## Also in AISecWorkshops
+
+This package originated in the [AISecWorkshops](https://github.com/emulateai-dev/AISecWorkshops) monorepo under `labs/setup/pyrit/pyrit_cli`. Installing from **this** repo is the standalone layout (`pyrit_cli/` at the root).

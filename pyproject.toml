@@ -22,7 +22,10 @@ hf = ["datasets>=2.14.0"]
 pyrit-cli = "pyrit_cli.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/emulateai-dev/AISecWorkshops"
+Homepage = "https://github.com/emulateai-dev/pyrit_cli"
+Repository = "https://github.com/emulateai-dev/pyrit_cli"
+Documentation = "https://github.com/emulateai-dev/pyrit_cli/blob/main/README.md"
+Changelog = "https://github.com/emulateai-dev/pyrit_cli/commits/main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyrit_cli"]
