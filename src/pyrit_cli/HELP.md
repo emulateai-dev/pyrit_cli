@@ -450,7 +450,7 @@ Maps to PyRIT **`RedTeamingAttack`**: an **adversarial** chat model proposes pro
 |--------|----------|-------------|
 | `--objective-target` | yes | Victim: `<provider>:<model>`, **`http`**, or **http(s) URL** for HTTPTarget (see **HTTP victim flags**). |
 | `--objective` | yes | High-level attack goal string |
-| `--adversarial-target` | no | Adversarial LLM; default = `--objective-target` (**required** chat spec when victim is HTTP) |
+| `--adversarial-target` | no | Adversarial LLM; default = `--objective-target`, except local victims (`ollama:`, `lmstudio:`, `compat:`) auto-fallback to `openai:${OPENAI_CHAT_MODEL}` when available (**required** chat spec when victim is HTTP). |
 | `--http-request` / `--http-response-parser` | with HTTP victim | Same as prompt-sending; required for HTTP victim |
 | `--http-*` | optional | Same as **HTTP victim flags** |
 | `--max-turns` | no | Default `5`, minimum `1` |
@@ -474,8 +474,8 @@ LLM-based converters (e.g. variation, translation) are **not** wired in the CLI 
 
 ### Flavors
 
-**A. Minimal (same provider/model chain)**  
-Good for labs: one target spec for victim + adversary + default scorer chain, explicit success criterion.
+**A. Minimal (single spec, inferred chain)**  
+Good for labs: one target spec for victim and inferred adversary/scorer chain, plus explicit success criterion.
 
 ```bash
 pyrit-cli redteam red-teaming-attack \
@@ -570,12 +570,15 @@ pyrit-cli redteam red-teaming-attack \
   --max-turns 3
 ```
 
-**I. All-Ollama (local lab)**  
-Victim, adversary, and default scorer chain all use the same **`ollama:`** spec when you omit `--adversarial-target` and `--scorer-chat-target`. Ollama must be serving the model tag.
+**I. All-Ollama (local lab, explicit)**  
+To force victim, adversary, and scorer to all use the same **`ollama:`** spec, set both flags explicitly.  
+If omitted, local victims can auto-fallback adversary/scorer to `openai:${OPENAI_CHAT_MODEL}` from `~/.pyrit`.
 
 ```bash
 pyrit-cli redteam red-teaming-attack \
   --objective-target ollama:llama3.2 \
+  --adversarial-target ollama:llama3.2 \
+  --scorer-chat-target ollama:llama3.2 \
   --objective "Get the assistant to say the capital of France is Paris." \
   --true-description "The response states that Paris is the capital of France." \
   --max-turns 3

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ from pyrit_cli.redteam.http_target_cli import (
     is_http_victim_spec,
     parse_objective_http_url,
 )
-from pyrit_cli.redteam.targets import openai_chat_from_spec
+from pyrit_cli.redteam.targets import openai_chat_from_spec, parse_target_spec
 from pyrit_cli.registries.converters import make_converters
 from pyrit_cli.registries.scorers import build_objective_scorer
 
@@ -35,6 +36,35 @@ _RTA_CHOICES: dict[str, Any] = {
     "violent_durian": RTASystemPromptPaths.VIOLENT_DURIAN.value,
     "crucible": RTASystemPromptPaths.CRUCIBLE.value,
 }
+
+
+def _default_openai_chain_spec_from_env() -> str | None:
+    model = (
+        os.environ.get("OPENAI_CHAT_MODEL", "")
+        or os.environ.get("PLATFORM_OPENAI_CHAT_GPT4O_MODEL", "")
+    ).strip()
+    if not model or model.startswith("${"):
+        return None
+    return f"openai:{model}"
+
+
+def _resolve_default_chat_chain_spec(
+    *,
+    objective_target_spec: str,
+    explicit_chain_spec: str | None,
+) -> str:
+    if explicit_chain_spec:
+        return explicit_chain_spec
+
+    provider, _ = parse_target_spec(objective_target_spec)
+
+    # Local/non-JSON victims often fail with self-ask scorers when scorer defaults to victim.
+    # Prefer the configured OpenAI-compatible default chain when available.
+    if provider in {"ollama", "lmstudio", "compat"}:
+        fallback = _default_openai_chain_spec_from_env()
+        if fallback:
+            return fallback
+    return objective_target_spec
 
 
 def resolve_rta_prompt(name: str) -> Any:
@@ -136,7 +166,10 @@ async def run_red_teaming_async(
         adv_spec = adversarial_target_spec
     else:
         objective_target = openai_chat_from_spec(objective_target_spec)
-        adv_spec = adversarial_target_spec or objective_target_spec
+        adv_spec = _resolve_default_chat_chain_spec(
+            objective_target_spec=objective_target_spec,
+            explicit_chain_spec=adversarial_target_spec,
+        )
         adversarial_chat = openai_chat_from_spec(adv_spec)
 
     scorer_spec = scorer_chat_spec or adv_spec

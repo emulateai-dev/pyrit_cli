@@ -465,7 +465,11 @@ def redteam_red_teaming(
     adversarial_target: str | None = typer.Option(
         None,
         "--adversarial-target",
-        help=f"Red-team LLM; default: same as --objective-target. {TARGET_SPEC_HELP}",
+        help=(
+            "Red-team LLM; default: same as --objective-target, except local victims "
+            "(ollama/lmstudio/compat) auto-fallback to openai:${OPENAI_CHAT_MODEL} when available. "
+            f"{TARGET_SPEC_HELP}"
+        ),
     ),
     max_turns: int = typer.Option(5, "--max-turns", min=1),
     rta_prompt: str = typer.Option(
@@ -496,7 +500,10 @@ def redteam_red_teaming(
     scorer_chat_target: str | None = typer.Option(
         None,
         "--scorer-chat-target",
-        help=f"Scorer LLM; default: adversarial target. {TARGET_SPEC_HELP}",
+        help=(
+            "Scorer LLM; default: adversarial target (including auto-fallback behavior). "
+            f"{TARGET_SPEC_HELP}"
+        ),
     ),
     request_converter: list[str] | None = typer.Option(
         None,
