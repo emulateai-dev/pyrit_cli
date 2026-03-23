@@ -1,0 +1,5 @@
+POST /v1/chat/completions HTTP/1.1
+Host: 127.0.0.1:11434
+Content-Type: application/json
+
+{"model":"llama3.2","messages":[{"role":"user","content":"{PROMPT}"}],"stream":false}

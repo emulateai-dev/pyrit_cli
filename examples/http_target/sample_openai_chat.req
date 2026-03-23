@@ -1,0 +1,13 @@
+POST https://api.example.com/v1/chat/completions HTTP/1.1
+Host: api.example.com
+Content-Type: application/json
+Authorization: Bearer YOUR_TOKEN_HERE
+
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    {"role": "user", "content": "{PROMPT}"}
+  ],
+  "max_tokens": 256,
+  "temperature": 0.7
+}

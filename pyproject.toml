@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyrit-cli"
+version = "0.1.0"
+description = "AISec workshop CLI for PyRIT setup and red-team flows"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "typer>=0.12.0",
+    "python-dotenv>=1.0.0",
+    "pyrit>=0.11.0,<0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+hf = ["datasets>=2.14.0"]
+
+[project.scripts]
+pyrit-cli = "pyrit_cli.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/emulateai-dev/AISecWorkshops"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pyrit_cli"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/pyrit_cli", "README.md"]
