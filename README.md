@@ -149,10 +149,31 @@ Full flags, HTTP victim options, provider env vars, and edge cases: **[src/pyrit
 
 ## Development
 
+Install dev + HF extras, then run **pytest** (or use **Nox** to create a clean venv each time):
+
 ```bash
+pip install -e ".[dev,hf]"
 pytest tests/
+pytest tests/ -m "not integration"   # skip HF download + Ollama (default Nox session)
 ruff check src/pyrit_cli tests
 ```
+
+**Nox** (install globally: `pipx install nox` / `uv tool install nox`):
+
+```bash
+# Fast suite: editable install + subprocess CLI checks (no HF / Ollama)
+nox -s tests -p 3.12
+
+# Ollama prompt-sending if ``qwen3:0.6b`` is in ``ollama list``; Hugging Face subprocess inspect is opt-in:
+nox -s integration -p 3.12
+nox -s integration -p 3.12 -- --with-hf   # pass through to pytest after ``--``; enables HF subprocess inspect
+
+nox -s lint -p 3.12
+```
+
+If your environment sets conflicting TTY color vars, prefix: `env -u FORCE_COLOR -u NO_COLOR nox ...`.
+
+Sessions **tests** run on Python **3.10** and **3.12** by default; pass **`-p 3.12`** to run one interpreter only.
 
 ## License
 

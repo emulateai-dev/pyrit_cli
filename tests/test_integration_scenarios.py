@@ -104,7 +104,9 @@ def test_subprocess_setup_after_save_openai_compatible(tmp_path: Path, monkeypat
 
 @pytest.mark.integration
 def test_subprocess_datasets_inspect_hf_imdb() -> None:
-    """Downloads / caches HF data on first run; use ``nox -s integration``."""
+    """Downloads HF data; opt-in with ``RUN_HF_INTEGRATION=1`` (heavy native deps in subprocess)."""
+    if os.environ.get("RUN_HF_INTEGRATION", "").strip() != "1":
+        pytest.skip("Set RUN_HF_INTEGRATION=1 to run Hugging Face subprocess inspect (network + disk).")
     p = _run_pyrit_cli(
         "datasets",
         "inspect",
@@ -116,6 +118,9 @@ def test_subprocess_datasets_inspect_hf_imdb() -> None:
         "--limit",
         "1",
         timeout=120.0,
+        env={
+            "TOKENIZERS_PARALLELISM": "false",
+        },
     )
     assert p.returncode == 0, p.stderr
     assert "[1]" in p.stdout or "1." in p.stdout or "text" in p.stdout.lower()

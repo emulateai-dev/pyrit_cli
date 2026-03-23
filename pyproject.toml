@@ -38,7 +38,4 @@ markers = [
     "integration: network or local services (Hugging Face download, Ollama).",
 ]
 testpaths = ["tests"]
-filterwarnings = [
-    "ignore::pytest.PytestUnknownMarkWarning",
-]
 

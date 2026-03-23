@@ -6,9 +6,10 @@ import nox
 
 nox.options.default_venv_backend = "virtualenv"
 nox.options.sessions = ["tests"]
+nox.options.error_on_missing_interpreters = False
 
 
-@nox.session(python=["3.10", "3.12"])
+@nox.session(python=["3.10", "3.12"], reuse_venv=True)
 def tests(session: nox.Session) -> None:
     """Install pyrit-cli with dev+hf extras; run fast tests (excludes integration)."""
     session.install("-e", ".[dev,hf]")
@@ -24,15 +25,19 @@ def tests(session: nox.Session) -> None:
 
 @nox.session(python="3.12")
 def integration(session: nox.Session) -> None:
-    """Integration tests: Hugging Face dataset inspect, Ollama (if model present), etc."""
+    """Ollama (if ``qwen3:0.6b``). Optional HF: ``nox -s integration -- --with-hf``."""
     session.install("-e", ".[dev,hf]")
+    want_hf = "--with-hf" in session.posargs
+    args = [a for a in session.posargs if a != "--with-hf"]
+    run_env = {"RUN_HF_INTEGRATION": "1"} if want_hf else {}
     session.run(
         "pytest",
         "tests",
         "-m",
         "integration",
         "--tb=short",
-        *session.posargs,
+        *args,
+        env=run_env,
     )
 
 
