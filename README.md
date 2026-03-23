@@ -34,10 +34,27 @@ pip install -e ".[dev]"
 pip install -e ".[hf]"
 ```
 
-**With uv**
+**With uv** (venv + pip interface)
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
+```
+
+**With uv** (install `pyrit-cli` on your PATH, like pipx)
+
+```bash
+uv tool install --editable ".[hf]"
+```
+
+Reinstall after git pull: `uv tool install --editable --force ".[hf]"`. Remove: `uv tool uninstall pyrit-cli`.
+
+With the submodule **lockfile**: `uv sync --extra hf` (installs into the project `.venv` when using uv’s project layout).
+
+**With Poetry** (activate **your** workshop venv — e.g. `poetry shell` from your lab project — then from this repo directory)
+
+```bash
+cd /path/to/pyrit_cli   # this repository root
+pip install -e ".[hf]"
 ```
 
 **From PyPI** *(if published)*

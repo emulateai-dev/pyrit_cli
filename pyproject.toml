@@ -31,4 +31,14 @@ Changelog = "https://github.com/emulateai-dev/pyrit_cli/commits/main"
 packages = ["src/pyrit_cli"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/pyrit_cli", "README.md"]
+include = ["src/pyrit_cli", "README.md", "noxfile.py"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: network or local services (Hugging Face download, Ollama).",
+]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::pytest.PytestUnknownMarkWarning",
+]
+
