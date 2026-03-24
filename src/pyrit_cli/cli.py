@@ -49,6 +49,7 @@ from pyrit_cli.redteam.red_teaming import parse_memory_labels_json, run_red_team
 from pyrit_cli.redteam.tap_attack import run_tap_attack
 from pyrit_cli.redteam.crescendo_attack import run_crescendo_attack
 from pyrit_cli.redteam.benchmark_attack import run_benchmark_attack
+from pyrit_cli.redteam.converter_fallback import parse_fallback_stack_arg
 from pyrit_cli.redteam.targets import TARGET_SPEC_HELP
 from pyrit_cli.telemetry import setup_phoenix_tracing
 
@@ -775,6 +776,32 @@ def redteam_tap_attack(
         True,
         "--include-pruned-conversations/--no-include-pruned-conversations",
     ),
+    request_converter: list[str] = typer.Option(
+        (),
+        "--request-converter",
+        help="Stateless converter key for victim request path (repeat for stack order). converters list-keys",
+    ),
+    response_converter: list[str] = typer.Option(
+        (),
+        "--response-converter",
+        help="Response-side converter stack (repeat flag).",
+    ),
+    converter_fallback_on_failure: bool = typer.Option(
+        False,
+        "--converter-fallback-on-failure/--no-converter-fallback-on-failure",
+        help="If TAP fails, rerun with curated converter stacks (up to --max-converter-stacks).",
+    ),
+    max_converter_stacks: int = typer.Option(
+        3,
+        "--max-converter-stacks",
+        min=1,
+        help="Max fallback stacks for TAP retries.",
+    ),
+    converter_fallback_stack: list[str] = typer.Option(
+        (),
+        "--converter-fallback-stack",
+        help="Comma-separated keys per stack; repeat flag (overrides default curation).",
+    ),
 ) -> None:
     if is_http_victim_spec(objective_target):
         typer.secho(
@@ -796,6 +823,14 @@ def redteam_tap_attack(
         err=True,
         fg=typer.colors.YELLOW,
     )
+    tap_fb_stacks = None
+    if converter_fallback_stack:
+        try:
+            tap_fb_stacks = [parse_fallback_stack_arg(s) for s in converter_fallback_stack]
+        except ValueError as e:
+            typer.secho(str(e), err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1) from e
+
     try:
         run_tap_attack(
             objective_target_spec=objective_target,
@@ -814,6 +849,11 @@ def redteam_tap_attack(
             score_criteria_file=score_criteria_file,
             include_adversarial_conversation=include_adversarial_conversation,
             include_pruned_conversations=include_pruned_conversations,
+            request_converter_keys=list(request_converter),
+            response_converter_keys=list(response_converter),
+            converter_fallback_on_failure=converter_fallback_on_failure,
+            max_converter_stacks=max_converter_stacks,
+            converter_fallback_stacks=tap_fb_stacks,
         )
     except ValueError as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
@@ -863,13 +903,13 @@ def redteam_crescendo_attack(
         "--scorer-chat-target",
         help=f"Scorer LLM target; default: adversarial target. {TARGET_SPEC_HELP}",
     ),
-    request_converter: list[str] | None = typer.Option(
-        None,
+    request_converter: list[str] = typer.Option(
+        (),
         "--request-converter",
         help="Stack stateless converters (order matters). Run: pyrit-cli converters list-keys",
     ),
-    response_converter: list[str] | None = typer.Option(
-        None,
+    response_converter: list[str] = typer.Option(
+        (),
         "--response-converter",
         help="Response-side converter stack.",
     ),
@@ -880,6 +920,22 @@ def redteam_crescendo_attack(
     include_pruned_conversations: bool = typer.Option(
         True,
         "--include-pruned-conversations/--no-include-pruned-conversations",
+    ),
+    converter_fallback_on_failure: bool = typer.Option(
+        False,
+        "--converter-fallback-on-failure/--no-converter-fallback-on-failure",
+        help="If the first Crescendo run fails, retry full attacks with converter stacks.",
+    ),
+    max_converter_stacks: int = typer.Option(
+        3,
+        "--max-converter-stacks",
+        min=1,
+        help="Max fallback stacks for Crescendo retries.",
+    ),
+    converter_fallback_stack: list[str] = typer.Option(
+        (),
+        "--converter-fallback-stack",
+        help="Comma-separated keys per stack; repeat flag (overrides default curation).",
     ),
 ) -> None:
     if is_http_victim_spec(objective_target):
@@ -902,6 +958,14 @@ def redteam_crescendo_attack(
         err=True,
         fg=typer.colors.YELLOW,
     )
+    cre_fb_stacks = None
+    if converter_fallback_stack:
+        try:
+            cre_fb_stacks = [parse_fallback_stack_arg(s) for s in converter_fallback_stack]
+        except ValueError as e:
+            typer.secho(str(e), err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1) from e
+
     try:
         run_crescendo_attack(
             objective_target_spec=objective_target,
@@ -913,11 +977,14 @@ def redteam_crescendo_attack(
             true_description=true_description,
             refusal_mode=refusal_mode,
             scorer_chat_spec=scorer_chat_target,
-            request_converter_keys=list(request_converter or []),
-            response_converter_keys=list(response_converter or []),
+            request_converter_keys=list(request_converter),
+            response_converter_keys=list(response_converter),
             include_adversarial_conversation=include_adversarial_conversation,
             include_pruned_conversations=include_pruned_conversations,
             memory_labels=memory_labels,
+            converter_fallback_on_failure=converter_fallback_on_failure,
+            max_converter_stacks=max_converter_stacks,
+            converter_fallback_stacks=cre_fb_stacks,
         )
     except ValueError as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
@@ -1002,6 +1069,31 @@ def redteam_benchmark_attack(
         "--output-dir",
         help="Directory to write report.html and results.json.",
     ),
+    converter_fallback: bool = typer.Option(
+        False,
+        "--converter-fallback/--no-converter-fallback",
+        help=(
+            "After failures, retry baseline with converter stacks, then template×converter (capped), "
+            "then TAP per stack. Stateless keys only."
+        ),
+    ),
+    max_converter_stacks: int = typer.Option(
+        3,
+        "--max-converter-stacks",
+        min=1,
+        help="Max curated (or explicit) converter stacks when --converter-fallback is set.",
+    ),
+    converter_fallback_stack: list[str] = typer.Option(
+        (),
+        "--converter-fallback-stack",
+        help="Comma-separated keys for one stack; repeat flag for multiple stacks (overrides curation).",
+    ),
+    max_template_converter_attempts: int | None = typer.Option(
+        None,
+        "--max-template-converter-attempts",
+        min=1,
+        help="Cap template×converter attempts (default: derived from templates × stacks).",
+    ),
 ) -> None:
     if is_http_victim_spec(objective_target):
         typer.secho(
@@ -1019,6 +1111,14 @@ def redteam_benchmark_attack(
         err=True,
         fg=typer.colors.YELLOW,
     )
+    explicit_fb_stacks = None
+    if converter_fallback_stack:
+        try:
+            explicit_fb_stacks = [parse_fallback_stack_arg(s) for s in converter_fallback_stack]
+        except ValueError as e:
+            typer.secho(str(e), err=True, fg=typer.colors.RED)
+            raise typer.Exit(code=1) from e
+
     try:
         html_path, json_path = run_benchmark_attack(
             objective_target_spec=objective_target,
@@ -1041,6 +1141,10 @@ def redteam_benchmark_attack(
             show_progress=show_progress,
             report_title=report_title,
             report_organization=report_organization,
+            converter_fallback=converter_fallback,
+            max_converter_stacks=max_converter_stacks,
+            converter_fallback_stacks=explicit_fb_stacks,
+            max_template_converter_attempts=max_template_converter_attempts,
         )
         typer.secho(f"Benchmark report: {html_path}", fg=typer.colors.GREEN)
         typer.secho(f"Benchmark JSON:   {json_path}", fg=typer.colors.GREEN)

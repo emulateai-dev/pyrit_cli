@@ -783,6 +783,11 @@ All target flags use the same **`<provider>:<model>`** syntax as **red-teaming-a
 | `--score-criteria` (`--score-criteria-file`) | no | Path to YAML scale arguments consumed by `SelfAskScaleScorer` (custom score categories/levels); enables custom TAP scoring |
 | `--include-adversarial-conversation` | flag | Print red-team transcript (default on) |
 | `--include-pruned-conversations` | flag | Print pruned branches (default on) |
+| `--request-converter` | no | Repeatable stateless converter keys on the victim request path (`AttackConverterConfig`) |
+| `--response-converter` | no | Repeatable response-side converter keys |
+| `--converter-fallback-on-failure` / `--no-converter-fallback-on-failure` | flag | If the first TAP run fails, retry full TAP with curated converter stacks (up to `--max-converter-stacks`) |
+| `--max-converter-stacks` | no | Cap for fallback stacks (default `3`) |
+| `--converter-fallback-stack` | no | Comma-separated keys = one stack; repeat flag to override curation |
 
 **Run summary**  
 After the printed TAP report, the CLI emits the same **Run summary** footer (**n=1**). **SUCCESS** means the TAP run’s float score met **`--score-threshold`** (default **0.7** when PyRIT’s default scorer is used; the note states the threshold used).
@@ -833,6 +838,9 @@ Maps to PyRIT **`CrescendoAttack`**: an adversarial model progressively escalate
 | `--scorer-chat-target` | no | Scorer LLM `<provider>:<model>`; default = adversarial target |
 | `--request-converter` | no | Repeatable stateless converter keys (order matters) |
 | `--response-converter` | no | Repeatable response-side converter keys |
+| `--converter-fallback-on-failure` / `--no-converter-fallback-on-failure` | flag | If the first run fails, retry full Crescendo attacks with curated converter stacks |
+| `--max-converter-stacks` | no | Cap for fallback stacks (default `3`) |
+| `--converter-fallback-stack` | no | Comma-separated keys = one stack; repeat flag to override curation |
 | `--include-adversarial-conversation` | flag | Print red-team transcript (default on) |
 | `--include-pruned-conversations` | flag | Print discarded/backtracked paths (default on) |
 
@@ -869,11 +877,15 @@ pyrit-cli redteam crescendo-attack \
 Runs a multi-stage benchmark over a dataset:
 
 1. baseline prompt-sending per objective,
-2. retry unresolved prompts across bundled jailbreak templates,
-3. run TAP fallback on top-K remaining unresolved prompts,
-4. write `report.html` and `results.json`.
+2. if `--converter-fallback`: baseline retries with stateless converter stacks on failures,
+3. jailbreak-template retries (plain) on unresolved prompts,
+4. if `--converter-fallback`: template×converter attempts (capped),
+5. TAP fallback on top-K remaining unresolved prompts (plain, or one TAP run per converter stack when fallback is on),
+6. write `report.html` and `results.json`.
 
-The HTML report uses neutral branding (no library name in the title), an executive summary and methodology section, and a **Final results** table where each row expands to show base prompt, final prompt, response, outcome reason, and optional scorer detail.
+**TAP objective:** TAP always uses the **same raw objective text as baseline** (the dataset row). It does **not** reuse jailbreak-template prepends from step 3–4—TAP is a separate jailbreak mechanism. With `--converter-fallback`, optional converter stacks apply on the **victim path** for TAP (and baseline/template), not as template wrapping.
+
+The HTML report uses neutral branding (no library name in the title), an executive summary and methodology section, a **D3.js** **tangled tree** of per-prompt **attack paths** (compact columns and bundled edges; short labels with full text on hover), and a **Final results** table where each row expands to show base prompt, the **winning** final prompt when the run passed (template text, TAP note, baseline, or converter path as recorded), response, outcome reason, and optional scorer detail. D3 is loaded from a CDN; use an offline mirror if required.
 
 ### Key options
 
@@ -892,6 +904,10 @@ The HTML report uses neutral branding (no library name in the title), an executi
 | `--progress` / `--no-progress` | Show or hide live progress bars for baseline/template/TAP stages (with live ASR in the task label when enabled). |
 | `--report-title` | Custom HTML report title and main heading (default: LLM security benchmark report). |
 | `--report-organization` | Optional subtitle (e.g. team or program name). |
+| `--converter-fallback` / `--no-converter-fallback` | After failures, retry with stateless converter stacks on baseline, template×converter (capped), and TAP. |
+| `--max-converter-stacks` | Cap stacks used when converter fallback is on (default `3`; curated `rot13` / `base64` / … unless overridden). |
+| `--converter-fallback-stack` | Comma-separated keys = one stack; repeat the flag for multiple stacks (overrides curated list). |
+| `--max-template-converter-attempts` | Hard cap on template×converter attempts (default: derived from templates × stacks). |
 | `--output-dir` | Output directory for `report.html` and `results.json`. |
 
 ### Examples
@@ -908,7 +924,62 @@ pyrit-cli redteam benchmark-attack \
   --output-dir ./benchmark-output
 ```
 
-**Victim + red-team model** (`--adversarial-target` runs TAP; if `--scorer-chat-target` is omitted, that same model also scores baseline, template, and TAP outcomes—useful when the victim is strict but you want a separate model for adversarial turns and evaluation):
+**Groq victim + Groq adversary (full TAP top-K)** — same victim/adversarial pair; evaluator defaults to the adversarial model when `--scorer-chat-target` is omitted. Requires `GROQ_API_KEY`.
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 20 \
+  --max-templates 8 \
+  --tap-top-k 5 \
+  --output-dir ./benchmark-output
+```
+
+**Same as above, minimal TAP** (lower cost; only one unresolved prompt gets TAP):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 20 \
+  --max-templates 8 \
+  --tap-top-k 1 \
+  --output-dir ./benchmark-output
+```
+
+**Groq victim/adversarial + OpenAI evaluator** (TAP red-team stays on Groq; baseline/template/TAP scoring uses `--scorer-chat-target`):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --scorer-chat-target openai:gpt-4o-mini \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 20 \
+  --max-templates 8 \
+  --tap-top-k 5 \
+  --output-dir ./benchmark-output
+```
+
+**Groq pair + converter fallback** (retries with stateless converter stacks after failures; see option table):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 20 \
+  --max-templates 8 \
+  --tap-top-k 5 \
+  --converter-fallback \
+  --max-converter-stacks 3 \
+  --output-dir ./benchmark-output
+```
+
+**Groq pair + custom converter stacks** (repeat `--converter-fallback-stack` for multiple stacks; comma-separated keys per stack):
 
 ```bash
 pyrit-cli redteam benchmark-attack \
@@ -916,12 +987,103 @@ pyrit-cli redteam benchmark-attack \
   --adversarial-target groq:llama-3.3-70b-versatile \
   --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
   --limit 10 \
-  --max-templates 8 \
-  --tap-top-k 1 \
+  --max-templates 6 \
+  --tap-top-k 3 \
+  --converter-fallback \
+  --converter-fallback-stack rot13 \
+  --converter-fallback-stack base64,rot13 \
   --output-dir ./benchmark-output
 ```
 
-**Explicit evaluator** (TAP uses `--adversarial-target`; scoring uses `--scorer-chat-target`):
+**Smaller TAP search** (reduces breadth/depth for faster or cheaper runs):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 20 \
+  --max-templates 8 \
+  --tap-top-k 5 \
+  --tap-tree-width 2 \
+  --tap-tree-depth 2 \
+  --tap-branching-factor 2 \
+  --output-dir ./benchmark-output
+```
+
+**Stricter TAP success threshold** (default is `0.7`):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 20 \
+  --max-templates 8 \
+  --tap-top-k 5 \
+  --tap-score-threshold 0.85 \
+  --output-dir ./benchmark-output
+```
+
+**Subset of bundled templates** (fnmatch on path under jailbreak templates):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 20 \
+  --template-include-glob "*Arth_Singh*" \
+  --max-templates 8 \
+  --tap-top-k 5 \
+  --output-dir ./benchmark-output
+```
+
+**Custom report title and subtitle** (HTML + JSON meta):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 20 \
+  --max-templates 8 \
+  --tap-top-k 5 \
+  --report-title "LLM red-team benchmark — Groq" \
+  --report-organization "Workshop / authorized testing only" \
+  --output-dir ./benchmark-output
+```
+
+**CI or log-friendly** (no Rich progress bars):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 20 \
+  --max-templates 8 \
+  --tap-top-k 5 \
+  --no-progress \
+  --output-dir ./benchmark-output
+```
+
+**Hugging Face dataset** (column and split as needed):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset hf:some_org/some_dataset \
+  --hf-split train \
+  --hf-column text \
+  --limit 20 \
+  --max-templates 8 \
+  --tap-top-k 5 \
+  --output-dir ./benchmark-output
+```
+
+**Explicit evaluator** (OpenAI victim example; same pattern as Groq + `--scorer-chat-target` above):
 
 ```bash
 pyrit-cli redteam benchmark-attack \
@@ -950,7 +1112,7 @@ Not exposed in the CLI today (use Python / notebooks for these):
 - Extra OpenAI-compatible hosts **beyond** `compat:` + env (no arbitrary per-flag URL without `compat` or code changes).
 - **`HTTPTarget`** is only wired for **`prompt-sending-attack`** and **`red-teaming-attack`** (victim **`http`** or an **http(s) URL** + `--http-*` flags). Other non-chat victims (`AzureMLChatTarget`, `TextTarget`, `OpenAIImageTarget`, …) and advanced HTTP flows still need Python.
 - **LLM-backed** prompt converters.
-- **`tap-attack`**: no `--request-converter` / `--response-converter` wiring yet (use Python for `AttackConverterConfig`). No **`--jailbreak-template`** on TAP in the CLI yet.
+- **`tap-attack`**: supports `--request-converter` / `--response-converter` and optional **`--converter-fallback-on-failure`** with curated stacks. No **`--jailbreak-template`** on TAP in the CLI yet.
 - **`crescendo-attack`**: no HTTP victim path in CLI; use chat targets only.
 - **`datasets inspect`**: previews only (text truncation); does not run attacks. Registered built-ins may download/cache on first fetch (same as PyRIT `SeedDatasetProvider`).
 - **`jailbreak-templates inspect`**: previews only (metadata + truncated rendered system prompt); does not call a model.

@@ -8,11 +8,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+_REPORT_DIR = Path(__file__).resolve().parent
+
+
+def _benchmark_tangled_tree_script() -> str:
+    return (_REPORT_DIR / "benchmark_tangled_tree.js").read_text(encoding="utf-8")
+
 
 def _pct(num: int, den: int) -> float:
     if den <= 0:
         return 0.0
     return (100.0 * num) / den
+
+
+def _tree_fallback_html(node: dict[str, Any]) -> str:
+    def fmt(n: dict[str, Any]) -> str:
+        name = html.escape(str(n.get("name", "")))
+        bits = [f"<li><strong>{name}</strong>"]
+        if n.get("type") == "step":
+            sc = "bad" if n.get("success") else "ok"
+            st = "attack succeeded" if n.get("success") else "attack failed"
+            bits.append(f" <span class='{sc}'>{st}</span>")
+        children = n.get("children") or []
+        if children:
+            bits.append("<ul>" + "".join(fmt(c) for c in children) + "</ul>")
+        bits.append("</li>")
+        return "".join(bits)
+
+    return f"<ul class='tree-fallback'>{fmt(node)}</ul>"
 
 
 def _preview(text: str, max_len: int = 100) -> str:
@@ -22,11 +45,18 @@ def _preview(text: str, max_len: int = 100) -> str:
     return t[: max_len - 1] + "…"
 
 
+def _attack_paths_json_for_script(payload: dict[str, Any]) -> str:
+    tree = payload.get("attack_paths") or {"name": "dataset", "type": "dataset", "children": []}
+    raw = json.dumps(tree, ensure_ascii=False)
+    return raw.replace("</script>", "<\\/script>")
+
+
 def build_benchmark_html(payload: dict[str, Any]) -> str:
     meta = payload["meta"]
     metrics = payload["metrics"]
     templates = payload["templates"]
     prompt_rows = payload["prompts"]
+    attack_paths_json = _attack_paths_json_for_script(payload)
 
     title = html.escape(str(meta.get("report_title") or "LLM security benchmark report"))
     org = meta.get("report_organization")
@@ -57,6 +87,12 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
         status_cls = "ok" if p["success"] else "bad"
         base = html.escape(obj)
         final_p = html.escape(str(p.get("final_prompt") or obj))
+        win_lbl = p.get("winning_step_label")
+        win_meta = ""
+        if p.get("success") and win_lbl:
+            win_meta = (
+                f'<p class="meta"><strong>Winning strategy:</strong> {html.escape(str(win_lbl))}</p>'
+            )
         resp = html.escape(str(p.get("final_response") or "—"))
         reason = html.escape(str(p.get("outcome_reason") or "—"))
         score_raw = p.get("score_summary")
@@ -66,8 +102,10 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
                 "<h4>Scorer detail (truncated)</h4>"
                 f"<pre>{html.escape(str(score_raw))}</pre>"
             )
-        summary_label = (
-            f"Result #{idx} — {status} — expand for base prompt, final prompt, response, and outcome reason"
+        fp_heading = (
+            "Final prompt (winning attempt)"
+            if p.get("success")
+            else "Final prompt (last characterized attempt)"
         )
         final_result_rows.append(
             "<tr class='result-row'>"
@@ -81,7 +119,8 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
             "<div class='detail-body'>"
             "<h4>Base prompt</h4>"
             f"<pre>{base}</pre>"
-            "<h4>Final prompt (as characterized for this run)</h4>"
+            f"<h4>{fp_heading}</h4>"
+            f"{win_meta}"
             f"<pre>{final_p}</pre>"
             "<h4>Response</h4>"
             f"<pre>{resp}</pre>"
@@ -119,7 +158,15 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
         cfg_lines.append(
             f"<li><strong>Evaluator (scorer):</strong> {html.escape(str(meta['scorer_target']))}</li>"
         )
+    if meta.get("converter_fallback"):
+        cfg_lines.append(
+            "<li><strong>Converter fallback:</strong> enabled "
+            f"(max stacks: {html.escape(str(meta.get('max_converter_stacks', '')))})</li>"
+        )
     cfg_ul = "".join(cfg_lines)
+
+    tree_fallback = _tree_fallback_html(payload.get("attack_paths") or {"name": "dataset", "type": "dataset", "children": []})
+    tangled_js = _benchmark_tangled_tree_script()
 
     return f"""<!doctype html>
 <html lang="en">
@@ -186,6 +233,12 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
       details.result-details {{ page-break-inside: avoid; }}
       details.result-details summary {{ color: #000; }}
     }}
+    #tree-wrap {{ overflow-x: auto; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 16px 20px; margin-top: 10px; }}
+    #paths-tree-svg {{ display: block; font: 11px system-ui, sans-serif; max-width: 100%; height: auto; }}
+    .paths-tangle-bundle {{ fill: none; }}
+    .tree-fallback {{ font-size: 0.88rem; margin: 8px 0 0; padding-left: 1.1rem; }}
+    .tree-fallback ul {{ margin: 4px 0; padding-left: 1.1rem; }}
   </style>
 </head>
 <body>
@@ -205,8 +258,9 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
         <h2>Methodology</h2>
         <ul class="method">
           <li><strong>Baseline:</strong> Each prompt is evaluated without a jailbreak template; success reflects the configured objective scorer (inverted refusal for prompt-sending in this benchmark).</li>
+          <li><strong>Converter fallback (optional):</strong> If enabled for this run, failed prompts are retried with stateless converter stacks on the victim path after baseline, again with templates, and TAP may be attempted once per stack.</li>
           <li><strong>Jailbreak templates:</strong> Prompts that fail baseline are retried with bundled template variants (subject to the configured template cap).</li>
-          <li><strong>TAP fallback:</strong> Up to K unresolved prompts are escalated using tree-based search; success uses the TAP float threshold scorer.</li>
+          <li><strong>TAP fallback:</strong> Up to K unresolved prompts are escalated using tree-based search on the <strong>same base objective</strong> as baseline (not jailbreak-template text); success uses the TAP float threshold scorer.</li>
         </ul>
       </section>
       <section>
@@ -238,6 +292,17 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
         </table>
       </section>
       <section>
+        <h2>Attack paths (tangled tree)</h2>
+        <p class="meta"><strong>Tangled tree</strong> layout (after <a href="https://observablehq.com/@nitaku/tangled-tree-visualization-ii">Abrate / Fujiwara</a>): fixed column widths and bundled edges so long runs stay compact. <strong>Labels are shortened</strong> (template tail, <code>bl</code>, <code>TAP</code>, <code>#n</code> for prompts); hover a box for the full text. Step fill: <span class="ok">green = defense held</span>; <span class="bad">red = jailbreak signal</span>. Scroll horizontally for wide graphs. D3.js v7 from CDN. Noscript: static outline below.</p>
+        <div id="tree-wrap">
+          <svg id="paths-tree-svg" role="img" aria-label="Attack paths tree diagram"></svg>
+        </div>
+        <noscript>
+          <p class="meta">Static outline (enable JavaScript for the diagram):</p>
+          {tree_fallback}
+        </noscript>
+      </section>
+      <section>
         <h2>Template effectiveness</h2>
         <table class="data">
           <thead><tr><th>Template</th><th>Attempted</th><th>Rescued</th><th>Rescue rate</th></tr></thead>
@@ -253,6 +318,11 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
         </table>
       </section>
     </main>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js" crossorigin="anonymous"></script>
+    <script type="application/json" id="bench-attack-paths-json">{attack_paths_json}</script>
+    <script>
+{tangled_js}
+    </script>
     <footer>
       Confidential — for authorized security testing only. Do not distribute outside approved channels.
       Automated scoring may not match human judgment or production safety policies.
@@ -282,6 +352,8 @@ def build_meta(
     tap_top_k: int,
     report_title: str | None = None,
     report_organization: str | None = None,
+    converter_fallback: bool = False,
+    max_converter_stacks: int = 3,
 ) -> dict[str, Any]:
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -293,4 +365,6 @@ def build_meta(
         "tap_top_k": tap_top_k,
         "report_title": report_title or "LLM security benchmark report",
         "report_organization": report_organization,
+        "converter_fallback": converter_fallback,
+        "max_converter_stacks": max_converter_stacks,
     }
