@@ -6,6 +6,8 @@ from pyrit_cli.redteam.benchmark_attack import (
     PromptRunRecord,
     aggregate_payload,
     build_attack_paths_tree,
+    build_attack_path_overview,
+    build_path_diagram_layers,
     resolve_benchmark_evaluator_spec,
     resolve_success_final_prompt_and_label,
     select_tap_candidates,
@@ -85,6 +87,37 @@ def test_resolve_success_final_prompt_uses_winning_step() -> None:
     assert lbl == "template:w.yaml"
 
 
+def test_build_attack_path_overview_sankey_and_signatures() -> None:
+    r1 = PromptRunRecord(index=1, objective="a", success=False)
+    r1.log_attack_step(stage="baseline", label="baseline (plain)", success=False, prompt_snapshot="a")
+    r2 = PromptRunRecord(index=2, objective="b", success=False)
+    r2.log_attack_step(stage="baseline", label="baseline (plain)", success=False, prompt_snapshot="b")
+    ov = build_attack_path_overview(records=[r1, r2])
+    assert "sankey" in ov and "links" in ov["sankey"]
+    by_pair = {(ln["source"], ln["target"]): ln["value"] for ln in ov["sankey"]["links"]}
+    ids = [n["id"] for n in ov["sankey"]["nodes"]]
+    assert ids[0] == "start"
+    i0 = ids.index("start")
+    mid = next(i for i, x in enumerate(ids) if x.startswith("L0|"))
+    i_fail = ids.index("end_fail")
+    assert by_pair.get((i0, mid)) == 2
+    assert by_pair.get((mid, i_fail)) == 2
+    assert len(ov["path_signatures"]) == 1
+    assert ov["path_signatures"][0]["count"] == 2
+
+
+def test_build_path_diagram_merges_identical_baseline_step() -> None:
+    r1 = PromptRunRecord(index=1, objective="a")
+    r1.log_attack_step(stage="baseline", label="baseline (plain)", success=False, prompt_snapshot="a")
+    r2 = PromptRunRecord(index=2, objective="b")
+    r2.log_attack_step(stage="baseline", label="baseline (plain)", success=False, prompt_snapshot="b")
+    dg = build_path_diagram_layers(dataset="pyrit:x", records=[r1, r2])
+    assert dg["format"] == "layers"
+    baseline_entries = [n for row in dg["levels"] for n in row if n.get("stage") == "baseline"]
+    assert len(baseline_entries) == 1
+    assert sorted(baseline_entries[0]["parents"]) == ["p1", "p2"]
+
+
 def test_build_attack_paths_tree() -> None:
     rec = PromptRunRecord(index=1, objective="hello")
     rec.log_attack_step(stage="baseline", label="baseline (plain)", success=False, prompt_snapshot="hello")
@@ -112,6 +145,12 @@ def test_aggregate_payload_stage_counts() -> None:
     assert payload["metrics"]["final_failure"] == 1
     assert "examples" not in payload
     assert "attack_paths" in payload
+    assert "attack_path_diagram" in payload
+    assert "attack_path_overview" in payload
+    assert "sankey" in payload["attack_path_overview"]
+    assert "path_signatures" in payload["attack_path_overview"]
+    assert payload["attack_path_diagram"]["format"] == "layers"
+    assert isinstance(payload["attack_path_diagram"]["levels"], list)
     assert "failed_prompt_examples" not in payload
     assert payload["attack_paths"]["type"] == "dataset"
     assert all("outcome_reason" in p for p in payload["prompts"])
@@ -170,13 +209,23 @@ def test_report_artifacts_written(tmp_path) -> None:
         ],
     }
     payload["attack_paths"] = {"name": "hf:demo/test", "type": "dataset", "children": []}
+    payload["attack_path_overview"] = build_attack_path_overview(
+        records=[
+            PromptRunRecord(index=1, objective="p1"),
+            PromptRunRecord(index=2, objective="p2"),
+        ],
+    )
     html = build_benchmark_html(payload)
     assert "LLM security benchmark report" in html
     assert "PyRIT" not in html
     assert "Executive summary" in html
-    assert "Attack paths (tangled tree)" in html
-    assert "paths-tree-svg" in html
-    assert "bench-attack-paths-json" in html
+    assert "Aggregate path flow" in html
+    assert "path-overview-sankey-svg" in html
+    assert "bench-path-overview-json" in html
+    assert "d3-sankey" in html
+    assert "Pipeline diagram" not in html
+    assert "path-diagram-svg" not in html
+    assert "bench-path-diagram-json" not in html
     assert "Failed-stage prompt examples" not in html
     assert "Winning strategy" in html
     assert "Final prompt (winning attempt)" in html

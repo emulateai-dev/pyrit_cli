@@ -11,31 +11,14 @@ from typing import Any
 _REPORT_DIR = Path(__file__).resolve().parent
 
 
-def _benchmark_tangled_tree_script() -> str:
-    return (_REPORT_DIR / "benchmark_tangled_tree.js").read_text(encoding="utf-8")
+def _benchmark_path_overview_script() -> str:
+    return (_REPORT_DIR / "benchmark_path_overview.js").read_text(encoding="utf-8")
 
 
 def _pct(num: int, den: int) -> float:
     if den <= 0:
         return 0.0
     return (100.0 * num) / den
-
-
-def _tree_fallback_html(node: dict[str, Any]) -> str:
-    def fmt(n: dict[str, Any]) -> str:
-        name = html.escape(str(n.get("name", "")))
-        bits = [f"<li><strong>{name}</strong>"]
-        if n.get("type") == "step":
-            sc = "bad" if n.get("success") else "ok"
-            st = "attack succeeded" if n.get("success") else "attack failed"
-            bits.append(f" <span class='{sc}'>{st}</span>")
-        children = n.get("children") or []
-        if children:
-            bits.append("<ul>" + "".join(fmt(c) for c in children) + "</ul>")
-        bits.append("</li>")
-        return "".join(bits)
-
-    return f"<ul class='tree-fallback'>{fmt(node)}</ul>"
 
 
 def _preview(text: str, max_len: int = 100) -> str:
@@ -45,10 +28,39 @@ def _preview(text: str, max_len: int = 100) -> str:
     return t[: max_len - 1] + "…"
 
 
-def _attack_paths_json_for_script(payload: dict[str, Any]) -> str:
-    tree = payload.get("attack_paths") or {"name": "dataset", "type": "dataset", "children": []}
-    raw = json.dumps(tree, ensure_ascii=False)
+def _path_overview_json_for_script(payload: dict[str, Any]) -> str:
+    ov = payload.get("attack_path_overview") or {"sankey": {"nodes": [], "links": []}, "path_signatures": []}
+    raw = json.dumps(ov, ensure_ascii=False)
     return raw.replace("</script>", "<\\/script>")
+
+
+def _path_signatures_table_html(overview: dict[str, Any] | None) -> str:
+    ov = overview if isinstance(overview, dict) else {}
+    rows = ov.get("path_signatures") or []
+    total_d = int(ov.get("path_signature_total_distinct") or 0)
+    if not rows:
+        return "<p class='meta'>No path signatures to list.</p>"
+    body = "".join(
+        "<tr>"
+        f"<td>{html.escape(str(r.get('signature', '')))}</td>"
+        f"<td class='num'>{int(r.get('count', 0))}</td>"
+        f"<td class='ok'>{int(r.get('final_success', 0))}</td>"
+        f"<td class='bad'>{int(r.get('final_failure', 0))}</td>"
+        "</tr>"
+        for r in rows
+    )
+    note = (
+        f"<p class='meta'>Showing top {len(rows)} of {total_d} distinct path shapes (sorted by count).</p>"
+        if total_d > len(rows)
+        else "<p class='meta'>Distinct path shapes in this run (sorted by count).</p>"
+    )
+    return (
+        note
+        + "<table class='data path-signatures-table'><thead><tr>"
+        "<th>Path shape (logged steps → final outcome)</th>"
+        "<th>Count</th><th>Final PASS</th><th>Final FAIL</th>"
+        f"</tr></thead><tbody>{body}</tbody></table>"
+    )
 
 
 def build_benchmark_html(payload: dict[str, Any]) -> str:
@@ -56,7 +68,9 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
     metrics = payload["metrics"]
     templates = payload["templates"]
     prompt_rows = payload["prompts"]
-    attack_paths_json = _attack_paths_json_for_script(payload)
+    path_overview_json = _path_overview_json_for_script(payload)
+    path_signatures_html = _path_signatures_table_html(payload.get("attack_path_overview"))
+    path_overview_js = _benchmark_path_overview_script()
 
     title = html.escape(str(meta.get("report_title") or "LLM security benchmark report"))
     org = meta.get("report_organization")
@@ -165,9 +179,6 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
         )
     cfg_ul = "".join(cfg_lines)
 
-    tree_fallback = _tree_fallback_html(payload.get("attack_paths") or {"name": "dataset", "type": "dataset", "children": []})
-    tangled_js = _benchmark_tangled_tree_script()
-
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -233,12 +244,11 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
       details.result-details {{ page-break-inside: avoid; }}
       details.result-details summary {{ color: #000; }}
     }}
-    #tree-wrap {{ overflow-x: auto; background: var(--surface); border: 1px solid var(--border);
-      border-radius: 10px; padding: 12px 16px 20px; margin-top: 10px; }}
-    #paths-tree-svg {{ display: block; font: 11px system-ui, sans-serif; max-width: 100%; height: auto; }}
-    .paths-tangle-bundle {{ fill: none; }}
-    .tree-fallback {{ font-size: 0.88rem; margin: 8px 0 0; padding-left: 1.1rem; }}
-    .tree-fallback ul {{ margin: 4px 0; padding-left: 1.1rem; }}
+    #path-overview-sankey-panel {{ overflow-x: auto; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 16px 16px; margin-top: 10px; }}
+    #path-overview-sankey-svg {{ display: block; font: 11px system-ui, sans-serif; max-width: 100%; height: auto; }}
+    .path-overview-sankey-link {{ fill: none; }}
+    .path-signatures-table td:first-child {{ font-size: 0.82rem; }}
   </style>
 </head>
 <body>
@@ -292,15 +302,14 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
         </table>
       </section>
       <section>
-        <h2>Attack paths (tangled tree)</h2>
-        <p class="meta"><strong>Tangled tree</strong> layout (after <a href="https://observablehq.com/@nitaku/tangled-tree-visualization-ii">Abrate / Fujiwara</a>): fixed column widths and bundled edges so long runs stay compact. <strong>Labels are shortened</strong> (template tail, <code>bl</code>, <code>TAP</code>, <code>#n</code> for prompts); hover a box for the full text. Step fill: <span class="ok">green = defense held</span>; <span class="bad">red = jailbreak signal</span>. Scroll horizontally for wide graphs. D3.js v7 from CDN. Noscript: static outline below.</p>
-        <div id="tree-wrap">
-          <svg id="paths-tree-svg" role="img" aria-label="Attack paths tree diagram"></svg>
+        <h2>Aggregate path flow</h2>
+        <p class="meta">Scaled summary for large runs. The <strong>Sankey</strong> diagram sums how many prompts move between each logged stage and the final outcome (band width = prompt count). Intermediate nodes are keyed by <strong>step index, stage id, and scorer outcome</strong> so the same stage at different depths stays distinct. <span class="ok">Green</span> step nodes: defense held on that attempt; <span class="bad">red</span> step nodes: jailbreak signal on that attempt; terminal nodes are final PASS vs FAIL. Requires JavaScript and the d3-sankey plugin (CDN). The table lists the most frequent full path shapes (exact step labels and outcomes).</p>
+        <h3 style="font-size:0.95rem;margin:18px 0 8px;">Flow by stage</h3>
+        <div id="path-overview-sankey-panel">
+          <svg id="path-overview-sankey-svg" role="img" aria-label="Aggregate path flow Sankey diagram"></svg>
         </div>
-        <noscript>
-          <p class="meta">Static outline (enable JavaScript for the diagram):</p>
-          {tree_fallback}
-        </noscript>
+        <h3 style="font-size:0.95rem;margin:22px 0 8px;">Top path shapes</h3>
+        {path_signatures_html}
       </section>
       <section>
         <h2>Template effectiveness</h2>
@@ -319,9 +328,10 @@ def build_benchmark_html(payload: dict[str, Any]) -> str:
       </section>
     </main>
     <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js" crossorigin="anonymous"></script>
-    <script type="application/json" id="bench-attack-paths-json">{attack_paths_json}</script>
+    <script src="https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/dist/d3-sankey.min.js" crossorigin="anonymous"></script>
+    <script type="application/json" id="bench-path-overview-json">{path_overview_json}</script>
     <script>
-{tangled_js}
+{path_overview_js}
     </script>
     <footer>
       Confidential — for authorized security testing only. Do not distribute outside approved channels.

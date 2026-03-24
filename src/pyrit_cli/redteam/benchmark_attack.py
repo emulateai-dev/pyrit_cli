@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
-from collections import defaultdict
+import re
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -280,6 +282,319 @@ def build_attack_paths_tree(*, dataset: str, records: list[PromptRunRecord]) -> 
     return {"name": str(dataset), "type": "dataset", "children": children}
 
 
+def _step_merge_id(stage: str, label: str, success: bool) -> str:
+    raw = f"{stage}\0{label}\0{success}"
+    return "st_" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _diagram_compact_label(meta: dict[str, Any]) -> str:
+    t = meta["type"]
+    n = (meta.get("name") or "").replace("\n", " ").strip()
+    if t == "dataset":
+        return n if len(n) <= 24 else n[:23] + "…"
+    if t == "prompt":
+        m = re.match(r"^#(\d+)\b", n)
+        if m:
+            return f"#{m.group(1)}"
+        return n if len(n) <= 12 else n[:11] + "…"
+    if t == "step":
+        stage = str(meta.get("stage") or "")
+        if stage == "baseline":
+            return "bl"
+        if stage == "baseline_converter":
+            return "bl+"
+        if stage == "tap":
+            return "TAP"
+        if stage == "template_converter":
+            tc = n.split("/")[-1] if "/" in n else n
+            tc = tc if len(tc) <= 10 else "…" + tc[-9:]
+            return "t+" + tc
+        if stage == "template":
+            tail = n.split("/")[-1] if "/" in n else n
+            if tail.startswith("template:"):
+                tail = tail[len("template:") :]
+            tail = tail if len(tail) <= 12 else "…" + tail[-11:]
+            return "t·" + tail
+        return n if len(n) <= 14 else n[:13] + "…"
+    return n if len(n) <= 16 else n[:15] + "…"
+
+
+def _diagram_full_title(meta: dict[str, Any]) -> str:
+    n = (meta.get("name") or "").replace("\n", " ").strip()
+    if meta["type"] == "prompt" and meta.get("final_success") is not None:
+        return n + " — final " + ("PASS" if meta["final_success"] else "FAIL")
+    if meta["type"] == "step":
+        st = str(meta.get("stage") or "")
+        succ = bool(meta.get("success"))
+        return n + " (" + st + ") — " + ("jailbreak signal" if succ else "defense held")
+    return n
+
+
+def build_path_diagram_layers(*, dataset: str, records: list[PromptRunRecord]) -> dict[str, Any]:
+    """Layered DAG for the pipeline figure: identical stage+label+scorer outcome share one node."""
+    ds_id = "d0"
+    nodes: dict[str, dict[str, Any]] = {
+        ds_id: {
+            "id": ds_id,
+            "type": "dataset",
+            "name": str(dataset),
+            "stage": None,
+            "success": None,
+            "final_success": None,
+        }
+    }
+    edges: set[tuple[str, str]] = set()
+
+    for r in records:
+        pv = r.objective.replace("\n", " ").strip()[:80]
+        if len(r.objective) > 80:
+            pv += "…"
+        pid = f"p{r.index}"
+        if pid not in nodes:
+            nodes[pid] = {
+                "id": pid,
+                "type": "prompt",
+                "name": f"#{r.index} {pv}",
+                "stage": None,
+                "success": None,
+                "final_success": r.success,
+            }
+        edges.add((ds_id, pid))
+        prev = pid
+        for step in r.attack_path_log:
+            st = str(step.get("stage", ""))
+            lab = str(step.get("label", ""))
+            ok = bool(step.get("success"))
+            sid = _step_merge_id(st, lab, ok)
+            if sid not in nodes:
+                nodes[sid] = {
+                    "id": sid,
+                    "type": "step",
+                    "name": lab,
+                    "stage": st,
+                    "success": ok,
+                    "final_success": None,
+                }
+            edges.add((prev, sid))
+            prev = sid
+
+    incoming: dict[str, set[str]] = defaultdict(set)
+    for p, c in edges:
+        incoming[c].add(p)
+
+    level_memo: dict[str, int] = {}
+
+    def level_of(nid: str) -> int:
+        if nid in level_memo:
+            return level_memo[nid]
+        ps = incoming.get(nid, set())
+        if not ps:
+            lev = 0
+        else:
+            lev = max(level_of(x) for x in ps) + 1
+        level_memo[nid] = lev
+        return lev
+
+    for nid in nodes:
+        level_of(nid)
+
+    max_lv = max(level_memo.values(), default=0)
+    levels_out: list[list[dict[str, Any]]] = [[] for _ in range(max_lv + 1)]
+    for nid, meta in nodes.items():
+        lv = level_memo[nid]
+        parents_sorted = sorted(incoming.get(nid, set()))
+        entry: dict[str, Any] = {
+            "id": nid,
+            "parents": parents_sorted,
+            "type": meta["type"],
+            "name": meta.get("name") or "",
+            "stage": meta.get("stage"),
+            "success": meta.get("success"),
+            "final_success": meta.get("final_success"),
+            "label": _diagram_compact_label(meta),
+            "fullTitle": _diagram_full_title(meta),
+            "nodeType": meta["type"],
+            "stepSuccess": meta.get("success"),
+        }
+        levels_out[lv].append(entry)
+
+    for row in levels_out:
+        row.sort(key=lambda x: x["id"])
+
+    return {"format": "layers", "levels": levels_out}
+
+
+_PATH_SIG_TOP_K = 30
+
+_SANKEY_START = "start"
+_SANKEY_END_PASS = "end_pass"
+_SANKEY_END_FAIL = "end_fail"
+
+
+def _sankey_step_node_id(depth: int, stage: str, success: bool) -> str:
+    suf = "T" if success else "F"
+    st = stage.replace("|", "/")
+    st = re.sub(r"[\s]+", " ", st).strip()[:64]
+    return f"L{depth}|{st}|{suf}"
+
+
+def _signature_step_phrase(step: dict[str, Any]) -> str:
+    stage = str(step.get("stage", ""))
+    lab = str(step.get("label", "")).replace("\n", " ").strip()
+    ok = bool(step.get("success"))
+    outcome = "jailbreak signal" if ok else "defense held"
+    if stage == "baseline":
+        return f"baseline ({outcome})"
+    if stage == "baseline_converter":
+        tail = lab.split("/")[-1] if "/" in lab else lab
+        return f"baseline+conv {tail[:40]} ({outcome})"
+    if stage == "template":
+        tail = lab.split("/")[-1] if "/" in lab else lab
+        tail = tail.removeprefix("template:")
+        return f"template {tail[:48]} ({outcome})"
+    if stage == "template_converter":
+        tail = lab.split("/")[-1] if "/" in lab else lab
+        return f"template+conv {tail[:36]} ({outcome})"
+    if stage == "tap":
+        return f"TAP ({outcome})"
+    return f"{stage or 'step'} ({outcome})"
+
+
+def _signature_key_from_log(log: list[dict[str, Any]], final_success: bool) -> str:
+    parts = [
+        f"{s.get('stage','')}|{s.get('label','')}|{int(bool(s.get('success')))}" for s in log
+    ]
+    return "\n".join(parts) + f"\nfinal|{int(final_success)}"
+
+
+def build_attack_path_overview(*, records: list[PromptRunRecord]) -> dict[str, Any]:
+    """Aggregates for large runs: Sankey link counts + top path signatures."""
+    if not records:
+        return {
+            "sankey": {"nodes": [], "links": []},
+            "path_signatures": [],
+            "path_signature_total_distinct": 0,
+        }
+
+    link_counts: Counter[tuple[str, str]] = Counter()
+    sig_agg: dict[str, dict[str, Any]] = {}
+
+    for r in records:
+        log = list(r.attack_path_log)
+        fs = bool(r.success)
+
+        sig_key = _signature_key_from_log(log, fs)
+        if sig_key not in sig_agg:
+            human = (
+                " → ".join(_signature_step_phrase(s) for s in log)
+                or "(no logged steps)"
+            )
+            human += " → " + ("final PASS" if fs else "final FAIL")
+            sig_agg[sig_key] = {
+                "signature": human,
+                "count": 0,
+                "final_success": 0,
+                "final_failure": 0,
+            }
+        sig_agg[sig_key]["count"] += 1
+        if fs:
+            sig_agg[sig_key]["final_success"] += 1
+        else:
+            sig_agg[sig_key]["final_failure"] += 1
+
+        if not log:
+            tgt = _SANKEY_END_PASS if fs else _SANKEY_END_FAIL
+            link_counts[(_SANKEY_START, tgt)] += 1
+            continue
+
+        prev = _SANKEY_START
+        for d, step in enumerate(log):
+            st = str(step.get("stage", "unknown"))
+            ok = bool(step.get("success"))
+            nid = _sankey_step_node_id(d, st, ok)
+            link_counts[(prev, nid)] += 1
+            prev = nid
+        tgt = _SANKEY_END_PASS if fs else _SANKEY_END_FAIL
+        link_counts[(prev, tgt)] += 1
+
+    needed: set[str] = set()
+    for (a, b), v in link_counts.items():
+        if v <= 0:
+            continue
+        needed.add(a)
+        needed.add(b)
+
+    node_ids: list[str] = []
+    if _SANKEY_START in needed:
+        node_ids.append(_SANKEY_START)
+    node_ids.extend(sorted(k for k in needed if k.startswith("L")))
+    if _SANKEY_END_PASS in needed:
+        node_ids.append(_SANKEY_END_PASS)
+    if _SANKEY_END_FAIL in needed:
+        node_ids.append(_SANKEY_END_FAIL)
+
+    node_meta: dict[str, dict[str, Any]] = {}
+    for nid in node_ids:
+        if nid == _SANKEY_START:
+            node_meta[nid] = {
+                "id": nid,
+                "label": "All prompts",
+                "kind": "start",
+                "stepSuccess": None,
+            }
+        elif nid == _SANKEY_END_PASS:
+            node_meta[nid] = {
+                "id": nid,
+                "label": "Final PASS",
+                "kind": "end",
+                "stepSuccess": True,
+            }
+        elif nid == _SANKEY_END_FAIL:
+            node_meta[nid] = {
+                "id": nid,
+                "label": "Final FAIL",
+                "kind": "end",
+                "stepSuccess": False,
+            }
+        else:
+            segs = nid.split("|")
+            if len(segs) != 3 or not segs[0].startswith("L"):
+                node_meta[nid] = {"id": nid, "label": nid, "kind": "step", "stepSuccess": None}
+                continue
+            try:
+                depth_i = int(segs[0][1:])
+            except ValueError:
+                node_meta[nid] = {"id": nid, "label": nid, "kind": "step", "stepSuccess": None}
+                continue
+            stage_raw = segs[1]
+            suf = segs[2]
+            ok = suf == "T"
+            stage_disp = stage_raw.replace("_", " ")[:48]
+            node_meta[nid] = {
+                "id": nid,
+                "label": f"[{depth_i}] {stage_disp} ({'signal' if ok else 'held'})",
+                "kind": "step",
+                "stepSuccess": ok,
+            }
+
+    id_index = {nid: i for i, nid in enumerate(node_ids)}
+    sankey_links: list[dict[str, Any]] = []
+    for (src, tgt), v in link_counts.items():
+        if v <= 0:
+            continue
+        sankey_links.append({"source": id_index[src], "target": id_index[tgt], "value": int(v)})
+
+    sankey_nodes = [node_meta[nid] for nid in node_ids]
+
+    sig_rows = sorted(sig_agg.values(), key=lambda x: (-x["count"], x["signature"]))[:_PATH_SIG_TOP_K]
+
+    return {
+        "sankey": {"nodes": sankey_nodes, "links": sankey_links},
+        "path_signatures": sig_rows,
+        "path_signature_total_distinct": len(sig_agg),
+    }
+
+
 def aggregate_payload(
     *,
     records: list[PromptRunRecord],
@@ -333,6 +648,8 @@ def aggregate_payload(
 
     dataset_label = str(meta.get("dataset", "dataset"))
     attack_paths = build_attack_paths_tree(dataset=dataset_label, records=records)
+    attack_path_diagram = build_path_diagram_layers(dataset=dataset_label, records=records)
+    attack_path_overview = build_attack_path_overview(records=records)
 
     return {
         "meta": meta,
@@ -349,6 +666,8 @@ def aggregate_payload(
         "templates": template_rows,
         "prompts": prompts,
         "attack_paths": attack_paths,
+        "attack_path_diagram": attack_path_diagram,
+        "attack_path_overview": attack_path_overview,
     }
 
 

@@ -32,7 +32,7 @@ Changelog = "https://github.com/emulateai-dev/pyrit_cli/commits/main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyrit_cli"]
 # Non-Python asset loaded at runtime by benchmark_report (Path next to benchmark_report.py).
-force-include = { "src/pyrit_cli/redteam/benchmark_tangled_tree.js" = "pyrit_cli/redteam/benchmark_tangled_tree.js" }
+force-include = { "src/pyrit_cli/redteam/benchmark_path_overview.js" = "pyrit_cli/redteam/benchmark_path_overview.js" }
 
 [tool.hatch.build.targets.sdist]
 include = ["src/pyrit_cli", "README.md", "noxfile.py"]

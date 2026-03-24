@@ -885,7 +885,7 @@ Runs a multi-stage benchmark over a dataset:
 
 **TAP objective:** TAP always uses the **same raw objective text as baseline** (the dataset row). It does **not** reuse jailbreak-template prepends from step 3–4—TAP is a separate jailbreak mechanism. With `--converter-fallback`, optional converter stacks apply on the **victim path** for TAP (and baseline/template), not as template wrapping.
 
-The HTML report uses neutral branding (no library name in the title), an executive summary and methodology section, a **D3.js** **tangled tree** of per-prompt **attack paths** (compact columns and bundled edges; short labels with full text on hover), and a **Final results** table where each row expands to show base prompt, the **winning** final prompt when the run passed (template text, TAP note, baseline, or converter path as recorded), response, outcome reason, and optional scorer detail. D3 is loaded from a CDN; use an offline mirror if required.
+The HTML report uses neutral branding (no library name in the title), an executive summary and methodology section, an **aggregate path flow** section (D3.js + d3-sankey from a CDN): a Sankey view of summed transitions between logged stages and final outcomes, plus a table of the most frequent full path shapes—and a **Final results** table where each row expands to show base prompt, the **winning** final prompt when the run passed (template text, TAP note, baseline, or converter path as recorded), response, outcome reason, and optional scorer detail. Use an offline CDN mirror if required.
 
 ### Key options
 
