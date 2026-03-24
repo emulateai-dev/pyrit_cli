@@ -4,6 +4,8 @@
 
 Use only on systems, data, and models you are **authorized** to test.
 
+**Workshop cheatsheet (AISecWorkshops):** [`labs/llms/red-teaming/jailbreaks/pyrit_cli_cheatsheet.md`](https://github.com/emulateai-dev/AISecWorkshops/blob/main/labs/llms/red-teaming/jailbreaks/pyrit_cli_cheatsheet.md) — one-page commands for datasets, jailbreak templates, converters, scorers, and red-team flows. Full reference: bundled **`src/pyrit_cli/HELP.md`** (also shown by tooling / `ask-ai`).
+
 ## Requirements
 
 - **Python** 3.10–3.13 (see `requires-python` in `pyproject.toml`)

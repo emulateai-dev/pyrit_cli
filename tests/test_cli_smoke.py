@@ -68,6 +68,17 @@ def test_scorers_list() -> None:
     assert "self-ask-tf" in r.stdout
 
 
+def test_scorers_eval_help() -> None:
+    r = runner.invoke(
+        app,
+        ["scorers", "eval", "--help"],
+        env={"COLUMNS": "200", "LINES": "60"},
+    )
+    assert r.exit_code == 0
+    assert "--preset" in r.stdout
+    assert "--text-file" in r.stdout
+
+
 def test_setup_status(pyrit_env_dir) -> None:
     r = runner.invoke(app, ["setup", "status"])
     assert r.exit_code == 0

@@ -22,6 +22,7 @@ from pyrit_cli.discover.jailbreak_templates_list import (
 from pyrit_cli.discover.jailbreak_templates_inspect import run_jailbreak_template_inspect
 from pyrit_cli.discover.datasets_inspect import run_dataset_inspect
 from pyrit_cli.discover.datasets_list import list_datasets_text
+from pyrit_cli.discover.scorers_eval import run_scorer_eval
 from pyrit_cli.discover.scorers_list import list_scorers_text
 from pyrit_cli.discover.targets_list import list_targets_text
 from pyrit_cli.ask_ai import run_ask_ai
@@ -344,7 +345,7 @@ def _redteam_group(ctx: typer.Context) -> None:
         typer.echo("  tap-attack            — Tree of Attacks with Pruning (TAPAttack).")
         typer.echo(
             "Discover: converters list | converters run | jailbreak-templates list | jailbreak-templates inspect | "
-            "scorers list | targets list | datasets list | datasets inspect"
+            "scorers list | scorers eval | targets list | datasets list | datasets inspect"
         )
         typer.echo("Full workshop UI: pip install aisec-gradio && aisec-gradio")
 
@@ -920,6 +921,72 @@ app.add_typer(scorers_app, name="scorers")
 @scorers_app.command("list")
 def scorers_list_cmd() -> None:
     typer.echo(list_scorers_text())
+
+
+@scorers_app.command("eval")
+def scorers_eval_cmd(
+    preset: str = typer.Option(
+        ...,
+        "--preset",
+        help="Objective scorer preset: self-ask-tf | self-ask-refusal (same as red-teaming-attack).",
+    ),
+    text: str | None = typer.Option(
+        None,
+        "--text",
+        help='Text to score. Use "-" to read from stdin.',
+    ),
+    text_file: Path | None = typer.Option(
+        None,
+        "--text-file",
+        help="Read text from this file (UTF-8). Mutually exclusive with --text.",
+    ),
+    objective: str | None = typer.Option(
+        None,
+        "--objective",
+        help="Optional task / attacker objective (passed to the scorer; useful for refusal detection).",
+    ),
+    scorer_chat_target: str | None = typer.Option(
+        None,
+        "--scorer-chat-target",
+        help=(
+            f"Chat model for self-ask scoring. {TARGET_SPEC_HELP} "
+            "If omitted, uses openai:<OPENAI_CHAT_MODEL> when that env var is set."
+        ),
+    ),
+    true_description: str | None = typer.Option(
+        None,
+        "--true-description",
+        help="Criterion for True when --preset=self-ask-tf (required for that preset).",
+    ),
+    refusal_mode: str = typer.Option(
+        "default",
+        "--refusal-mode",
+        help="When --preset=self-ask-refusal: default | strict.",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Print scores as a JSON array."),
+) -> None:
+    """Score arbitrary text with CLI True/False presets (PyRIT score_text_async).
+
+    Uses the same SelfAskTrueFalseScorer / SelfAskRefusalScorer wiring as red-teaming. The wrapped
+    message uses a single user-role piece (see PyRIT scoring docs).
+    """
+    try:
+        run_scorer_eval(
+            preset=preset,
+            text=text,
+            text_file=text_file,
+            objective=objective,
+            scorer_chat_target=scorer_chat_target,
+            true_description=true_description,
+            refusal_mode=refusal_mode,
+            json_out=json_out,
+        )
+    except (ValueError, FileNotFoundError) as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+    except Exception as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
 
 
 targets_app = typer.Typer(help="CLI-supported target patterns.")
