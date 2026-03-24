@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from pyrit.common.path import DATASETS_PATH
-from pyrit.datasets import TextJailBreak
 
 from pyrit.executor.attack import (
     AttackConverterConfig,
@@ -19,7 +18,7 @@ from pyrit.executor.attack import (
     ConsoleAttackResultPrinter,
     PromptSendingAttack,
 )
-from pyrit.models import Message, SeedDataset
+from pyrit.models import SeedDataset
 from pyrit.score import SelfAskRefusalScorer, SelfAskTrueFalseScorer, TrueFalseInverterScorer, TrueFalseQuestion
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
@@ -29,6 +28,7 @@ from pyrit_cli.redteam.http_target_cli import (
     is_http_victim_spec,
     parse_objective_http_url,
 )
+from pyrit_cli.redteam.jailbreak_prepended import build_jailbreak_prepended_conversation
 from pyrit_cli.redteam.targets import openai_chat_from_spec, parse_target_spec
 
 
@@ -114,19 +114,6 @@ def collect_objectives(
     return obs
 
 
-def _parse_kv_pairs(raw_pairs: list[str]) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for raw in raw_pairs:
-        if "=" not in raw:
-            raise ValueError(f"Invalid --jailbreak-template-param {raw!r}; expected key=value")
-        key, value = raw.split("=", 1)
-        k = key.strip()
-        if not k:
-            raise ValueError(f"Invalid --jailbreak-template-param {raw!r}; key cannot be empty")
-        out[k] = value
-    return out
-
-
 def _build_scoring_config(
     *,
     mode: str,
@@ -183,21 +170,6 @@ def _build_scoring_config(
     return AttackScoringConfig(objective_scorer=objective_scorer)
 
 
-def _build_prepended_conversation(
-    *,
-    jailbreak_template: str | None,
-    jailbreak_template_params: list[str],
-) -> list[Message] | None:
-    if not jailbreak_template:
-        if jailbreak_template_params:
-            raise ValueError("--jailbreak-template-param requires --jailbreak-template")
-        return None
-    kwargs = _parse_kv_pairs(jailbreak_template_params)
-    jailbreak = TextJailBreak(template_file_name=jailbreak_template)
-    system_prompt = jailbreak.get_jailbreak_system_prompt(**kwargs)
-    return [Message.from_system_prompt(system_prompt)]
-
-
 async def run_prompt_sending_async(
     target: str,
     objectives: Sequence[str],
@@ -247,7 +219,7 @@ async def run_prompt_sending_async(
         scorer_chat_target_spec=scorer_chat_target,
         attack_target_spec=target,
     )
-    prepended_conversation = _build_prepended_conversation(
+    prepended_conversation = build_jailbreak_prepended_conversation(
         jailbreak_template=jailbreak_template,
         jailbreak_template_params=list(jailbreak_template_params or []),
     )

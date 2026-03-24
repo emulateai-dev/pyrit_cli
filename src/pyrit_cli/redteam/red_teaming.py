@@ -19,6 +19,7 @@ from pyrit.executor.attack import (
 from pyrit.prompt_normalizer import PromptConverterConfiguration
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
+from pyrit_cli.redteam.jailbreak_prepended import build_jailbreak_prepended_conversation
 from pyrit_cli.redteam.http_target_cli import (
     build_http_json_escape_converter_config,
     build_http_objective_target,
@@ -138,6 +139,8 @@ async def run_red_teaming_async(
     http_use_tls: bool = True,
     http_json_body_converter: bool = False,
     http_model_name: str = "",
+    jailbreak_template: str | None = None,
+    jailbreak_template_params: list[str] | None = None,
 ) -> None:
     await initialize_pyrit_async(memory_db_type=IN_MEMORY)  # type: ignore[arg-type]
 
@@ -201,9 +204,16 @@ async def run_red_teaming_async(
         max_turns=max_turns,
     )
 
+    prepended = build_jailbreak_prepended_conversation(
+        jailbreak_template=jailbreak_template,
+        jailbreak_template_params=list(jailbreak_template_params or []),
+    )
+
     kwargs: dict[str, Any] = {"objective": objective.strip()}
     if memory_labels:
         kwargs["memory_labels"] = memory_labels
+    if prepended:
+        kwargs["prepended_conversation"] = prepended
 
     result = await attack.execute_async(**kwargs)  # type: ignore[misc]
     printer = ConsoleAttackResultPrinter()

@@ -19,6 +19,7 @@ from pyrit_cli.discover.jailbreak_templates_list import (
     list_jailbreak_templates_text,
     jailbreak_template_warnings,
 )
+from pyrit_cli.discover.jailbreak_templates_inspect import run_jailbreak_template_inspect
 from pyrit_cli.discover.datasets_inspect import run_dataset_inspect
 from pyrit_cli.discover.datasets_list import list_datasets_text
 from pyrit_cli.discover.scorers_list import list_scorers_text
@@ -342,7 +343,7 @@ def _redteam_group(ctx: typer.Context) -> None:
         typer.echo("  red-teaming-attack    — multi-turn RedTeamingAttack.")
         typer.echo("  tap-attack            — Tree of Attacks with Pruning (TAPAttack).")
         typer.echo(
-            "Discover: converters list | converters run | jailbreak-templates list | "
+            "Discover: converters list | converters run | jailbreak-templates list | jailbreak-templates inspect | "
             "scorers list | targets list | datasets list | datasets inspect"
         )
         typer.echo("Full workshop UI: pip install aisec-gradio && aisec-gradio")
@@ -424,7 +425,7 @@ def redteam_prompt_sending(
     jailbreak_template: str | None = typer.Option(
         None,
         "--jailbreak-template",
-        help="Optional TextJailBreak template filename (e.g. dan_1.yaml) prepended as system prompt.",
+        help="Optional TextJailBreak template: bundled basename (e.g. dan_1.yaml) or path to a .yaml file.",
     ),
     jailbreak_template_param: list[str] | None = typer.Option(
         None,
@@ -596,6 +597,16 @@ def redteam_red_teaming(
         "--http-model-name",
         help="Optional HTTPTarget model_name metadata.",
     ),
+    jailbreak_template: str | None = typer.Option(
+        None,
+        "--jailbreak-template",
+        help="Optional TextJailBreak template: bundled basename (e.g. dan_1.yaml) or path to a .yaml file.",
+    ),
+    jailbreak_template_param: list[str] | None = typer.Option(
+        None,
+        "--jailbreak-template-param",
+        help="Template key=value (repeatable). Requires --jailbreak-template.",
+    ),
 ) -> None:
     try:
         memory_labels = parse_memory_labels_json(memory_labels_json)
@@ -647,6 +658,8 @@ def redteam_red_teaming(
             http_use_tls=http_use_tls,
             http_json_body_converter=http_json_body_converter,
             http_model_name=http_model_name,
+            jailbreak_template=jailbreak_template,
+            jailbreak_template_params=list(jailbreak_template_param or []),
         )
     except ValueError as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
@@ -845,6 +858,56 @@ def jailbreak_templates_list_cmd(
             if json_out
             else list_jailbreak_templates_text(include_multi_parameter=include_multi_parameter)
         )
+    except Exception as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+
+@jailbreak_templates_app.command("inspect")
+def jailbreak_templates_inspect_cmd(
+    name_or_path: str = typer.Argument(
+        ...,
+        help="Template basename (e.g. dan_1.yaml), path under jailbreak root, or absolute path to a .yaml file.",
+    ),
+    relative_path: str | None = typer.Option(
+        None,
+        "--relative-path",
+        help="Disambiguate duplicate basenames: path relative to PyRIT jailbreak templates root.",
+    ),
+    include_multi_parameter: bool = typer.Option(
+        False,
+        "--include-multi-parameter",
+        help="Allow resolving templates under multi_parameter/ when matching by basename.",
+    ),
+    param: list[str] | None = typer.Option(
+        None,
+        "--param",
+        help="Template placeholder key=value (repeatable). Required for non-prompt parameters.",
+    ),
+    preview_chars: int = typer.Option(
+        4096,
+        "--preview-chars",
+        min=80,
+        max=8000,
+        help="Max characters for rendered preview (single-line, collapsed).",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="JSON output with metadata + preview."),
+) -> None:
+    """Preview a jailbreak template: parameters, path, and rendered system prompt (truncated)."""
+    try:
+        typer.echo(
+            run_jailbreak_template_inspect(
+                name_or_path,
+                include_multi_parameter=include_multi_parameter,
+                relative_path=relative_path,
+                param_pairs=list(param or []),
+                preview_chars=preview_chars,
+                json_out=json_out,
+            )
+        )
+    except (ValueError, FileNotFoundError) as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
     except Exception as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from e

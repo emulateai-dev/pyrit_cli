@@ -39,6 +39,16 @@ def test_jailbreak_templates_list_help() -> None:
     assert "json" in r.stdout.lower()
 
 
+def test_jailbreak_templates_inspect_help() -> None:
+    r = runner.invoke(
+        app,
+        ["jailbreak-templates", "inspect", "--help"],
+        env={"COLUMNS": "200", "LINES": "60"},
+    )
+    assert r.exit_code == 0
+    assert "relative-path" in r.stdout or "--relative-path" in r.stdout
+
+
 def test_targets_list() -> None:
     r = runner.invoke(app, ["targets", "list"])
     assert r.exit_code == 0
@@ -72,6 +82,7 @@ def test_red_teaming_help() -> None:
     )
     assert r.exit_code == 0
     assert "objective-target" in r.stdout
+    assert "--jailbreak-template" in r.stdout
 
 
 def test_prompt_sending_attack_help() -> None:

@@ -2,18 +2,25 @@
 
 Reference for **setup**, **discover**, **ask-ai**, and **red-team** commands. Install and quick examples: **`pyrit_cli/README.md`** in the workshop repo (`labs/setup/pyrit/pyrit_cli`). Longer **basic → advanced** path: **`pyrit_cli/docs/workshop-track.md`**. This file is bundled inside the `pyrit-cli` package for **`ask-ai`**.
 
+**Feature highlights**
+
+- **Jailbreak templates on the victim:** **`--jailbreak-template`** (bundled basename **or** path to a `.yaml` file) and repeatable **`--jailbreak-template-param key=value`** on **`prompt-sending-attack`** and **`red-teaming-attack`** — prepends a rendered `TextJailBreak` system message to the objective target (see [PyRIT: prepended conversations](https://azure.github.io/PyRIT/code/executor/attack/prompt-sending-attack/)). Preview with **`jailbreak-templates inspect`** (also accepts file paths).
+- **Single-turn scoring:** **`prompt-sending-attack`** supports **`--scoring-mode`** (`auto` \| `off` \| `configured`), **`--scorer-preset`**, **`--scorer-chat-target`**, and **`--true-description`** where applicable. Local victims (`ollama:`, …) may auto-fallback the scorer to **`openai:${OPENAI_CHAT_MODEL}`** when set.
+- **TAP:** **`tap-attack`** does not expose **`--jailbreak-template`** in the CLI; use PyRIT in Python for advanced TAP options.
+
 **Quick map**
 
 | Area | Section |
 |------|---------|
 | Discover (`datasets`, `converters run`, `jailbreak-templates`, …) | [Discover data and knobs](#discover-data-and-knobs) |
 | Dataset previews | [`datasets inspect`](#datasets-inspect-preview) |
+| Jailbreak template previews | [`jailbreak-templates inspect`](#jailbreak-templates-inspect-preview) |
 | Credentials / env | [Setup](#setup-pyrit-cli-setup), [Environment variables](#environment-variables-reference-targets) |
 | Natural language helper | [`ask-ai`](#ask-ai-natural-language--shell-command) |
 | Chat targets (`openai:`, `groq:`, …) | [Target syntax](#target-syntax-providermodel) |
 | Raw HTTP victim | [HTTP victim flags](#http-victim-flags-with---target-http-or---objective-target-http) |
-| Single-turn attack | [`prompt-sending-attack`](#1-prompt-sending-attack-single-turn) |
-| Multi-turn attack | [`red-teaming-attack`](#2-red-teaming-attack-multi-turn) |
+| Single-turn attack | [`prompt-sending-attack`](#1-prompt-sending-attack-single-turn) (datasets, scoring, **`--jailbreak-template`**) |
+| Multi-turn attack | [`red-teaming-attack`](#2-red-teaming-attack-multi-turn) (converters, **`--jailbreak-template`** on victim) |
 | TAP | [`tap-attack`](#3-tap-attack-tree-of-attacks-with-pruning) |
 
 **PyRIT docs (behavior and theory):**
@@ -161,6 +168,13 @@ Fail-open behavior:
 
 For a local setup, start `docker-compose.phoenix.yml` and point to `http://127.0.0.1:16007/v1/traces`.
 
+To enable tracing explicitly:
+
+```bash
+export PHOENIX_TRACING_ENABLED=true
+export PHOENIX_AUTO_INSTRUMENT=true   # optional; more verbose instrumentation
+```
+
 ---
 
 ## Shared concepts
@@ -301,6 +315,7 @@ pyrit-cli redteam red-teaming-attack \
 | Keys for `--request-converter` / `--response-converter` (stateless only) | `pyrit-cli converters list-keys` |
 | Apply stateless converters to arbitrary text (same keys as above; stack with repeated `-c`) | `pyrit-cli converters run -c KEY …` (positional text or stdin) |
 | Jailbreak YAML template names (`TextJailBreak` in Python) | `pyrit-cli jailbreak-templates list` (`--json`, optional `--include-multi-parameter`) |
+| Preview a jailbreak template before **`--jailbreak-template`** | `pyrit-cli jailbreak-templates inspect NAME` (see below; use on **`prompt-sending-attack`** and **`red-teaming-attack`**) |
 | Scorer presets and exports | `pyrit-cli scorers list` |
 | Target patterns (`openai:`, `groq:`, `http`, …) | `pyrit-cli targets list` |
 
@@ -330,6 +345,22 @@ pyrit-cli jailbreak-templates list --json
 ```
 
 If two files share the same **basename**, **`TextJailBreak(template_file_name=...)`** fails in PyRIT; the CLI prints a **warning** and, in text mode, shows **`name<TAB>relative_path`** for duplicates.
+
+#### `jailbreak-templates inspect` (preview)
+
+Shows **parameters**, **resolved path**, and a **truncated rendered system prompt** (same rendering as `TextJailBreak(...).get_jailbreak_system_prompt()`). Use **`--param key=value`** (repeatable) for templates that require placeholders besides **`prompt`**. If multiple files share the same basename, pass **`--relative-path`** (path under the jailbreak templates root, as shown by **`list`**). Default **`--preview-chars`** is **4096** (4k); max **8000**.
+
+```bash
+pyrit-cli jailbreak-templates inspect dan_1.yaml
+pyrit-cli jailbreak-templates inspect dan_1.yaml --preview-chars 800
+pyrit-cli jailbreak-templates inspect dan_1.yaml --json
+# Templates under multi_parameter/ (match by basename):
+pyrit-cli jailbreak-templates inspect some_template.yaml --include-multi-parameter
+# Multi-parameter template (example shape; names depend on the YAML):
+pyrit-cli jailbreak-templates inspect foo.yaml --param role=analyst --param topic=demo
+# After `list` shows duplicate basenames:
+pyrit-cli jailbreak-templates inspect dup.yaml --relative-path subdir/dup.yaml
+```
 
 #### Image converters and jailbreak templates (Python)
 
@@ -383,13 +414,20 @@ Maps to PyRIT **`PromptSendingAttack`**: one user-style objective per execution 
 | `--hf-config` | no | HF dataset config / name when needed |
 | `--limit` | no | Cap number of objectives after load (min 1) |
 | `--scoring-mode` | no | `auto` (default), `off`, `configured` |
-| `--scorer-preset` | no | `non-refusal`, `refusal`, `self-ask-tf` |
+| `--scorer-preset` | no | When **`--scoring-mode configured`**: `non-refusal`, `refusal`, `self-ask-tf`. Ignored when mode is **`auto`** (always non-refusal) |
 | `--true-description` | with `self-ask-tf` | Criterion for True |
-| `--scorer-chat-target` | no | Scorer LLM target; required for scoring with HTTP victims. For local targets (`ollama`, `lmstudio`, `compat`), default scorer may auto-fallback to `openai:${OPENAI_CHAT_MODEL}` when set |
-| `--jailbreak-template` | no | Optional `TextJailBreak` template name (prepended system prompt) |
-| `--jailbreak-template-param` | no | Repeatable `key=value` parameter for template rendering |
+| `--scorer-chat-target` | no | Scorer LLM target; **required** for scoring when the victim is HTTP. For **`ollama:`** / **`lmstudio:`** / **`compat:`**, if unset the scorer may auto-fallback to **`openai:${OPENAI_CHAT_MODEL}`** when that env is set (Self-ask scorers need JSON-capable chat targets) |
+| `--jailbreak-template` | no | Optional `TextJailBreak` template: **bundled basename** (e.g. `dan_1.yaml`) or **path to a `.yaml` file** on disk; prepended as system message. Preview with **`jailbreak-templates inspect`** (which also accepts paths) |
+| `--jailbreak-template-param` | no | Repeatable `key=value` for template placeholders (besides `prompt`); requires `--jailbreak-template` |
 
 You must supply **either** `--objective` **or** `--dataset`, not both.
+
+**Scoring behavior**
+
+- **`--scoring-mode auto`** (default): objective scorer is **inverted refusal** (non-refusal ⇒ success). Ignores `--scorer-preset`.
+- **`--scoring-mode configured`**: use **`--scorer-preset`** (`non-refusal`, `refusal`, or `self-ask-tf` + **`--true-description`**).
+- **`--scoring-mode off`**: no objective scorer (outcomes may show as undetermined), same as bare PyRIT examples.
+- Aggregate **ASR** over many runs is still **manual** (count successes in output) unless you use a notebook or your own script.
 
 ### Flavors
 
@@ -445,9 +483,13 @@ Use any benign `pyrit:` YAML or HF column suitable for your policy; `--limit` ke
 Same as the [HTTP victim flags](#http-victim-flags-with---target-http-or---objective-target-http) section: raw request file + response parser. Typical JSON chat APIs use `json:choices[0].message.content` and often `--http-json-body-converter`.
 
 **G. Prepend a jailbreak template**  
-Uses PyRIT `TextJailBreak` to build a system prompt prepended to every objective in the run.
+Uses PyRIT `TextJailBreak` to build a system prompt prepended to every objective in the run. Inspect the template first: **`pyrit-cli jailbreak-templates inspect dan_1.yaml`**.
+
+**Bundled name** (resolved under PyRIT’s jailbreak templates directory):
 
 ```bash
+pyrit-cli jailbreak-templates inspect dan_1.yaml --preview-chars 600
+
 pyrit-cli redteam prompt-sending-attack \
   --target openai:gpt-4o-mini \
   --dataset hf:PKU-Alignment/BeaverTails-Evaluation \
@@ -455,6 +497,18 @@ pyrit-cli redteam prompt-sending-attack \
   --hf-column prompt \
   --limit 10 \
   --jailbreak-template dan_1.yaml
+```
+
+**Custom YAML on disk** (same flag; path must exist as a file):
+
+```bash
+pyrit-cli jailbreak-templates inspect /path/to/my_template.yaml
+
+pyrit-cli redteam prompt-sending-attack \
+  --target ollama:qwen3:0.6b \
+  --objective "Reply with exactly: OK" \
+  --jailbreak-template /path/to/my_template.yaml \
+  --scoring-mode auto
 ```
 
 ---
@@ -482,6 +536,8 @@ Maps to PyRIT **`RedTeamingAttack`**: an **adversarial** chat model proposes pro
 | `--request-converter` | no | Repeatable; stateless converter keys (order matters). **Disallowed** with **`--http-json-body-converter`** when victim is HTTP. |
 | `--response-converter` | no | Repeatable; applied to responses (works with HTTP victim; stacks after any HTTP request converter). |
 | `--include-adversarial-conversation` | flag | Include red-team LLM transcript in printed report |
+| `--jailbreak-template` | no | Optional `TextJailBreak` template: bundled basename (e.g. `dan_1.yaml`) or path to a `.yaml` file; prepended to **victim** context before the red-team loop (same idea as [PyRIT prepended conversation](https://azure.github.io/PyRIT/code/executor/attack/prompt-sending-attack/)). Preview: **`jailbreak-templates inspect`** |
+| `--jailbreak-template-param` | no | Repeatable `key=value` for template placeholders (besides `prompt`); requires `--jailbreak-template` |
 
 ### Stateless `--request-converter` / `--response-converter` keys
 
@@ -560,6 +616,20 @@ pyrit-cli redteam red-teaming-attack \
   --true-description "..." \
   --request-converter emoji \
   --request-converter rot13
+```
+
+**F2. Victim prepended jailbreak template**  
+Prepends a rendered jailbreak system message to the **objective (victim)** conversation (aligned with PyRIT `prepended_conversation` on `execute_async`). Does not replace `--rta-prompt` (adversarial red-team system prompt). Use a **bundled basename** or a **path to your `.yaml`** (same as `prompt-sending-attack`).
+
+```bash
+pyrit-cli jailbreak-templates inspect dan_1.yaml
+
+pyrit-cli redteam red-teaming-attack \
+  --objective-target ollama:qwen3:0.6b \
+  --objective "Benign lab objective for multi-turn test." \
+  --true-description "Criterion for success in plain language." \
+  --max-turns 3 \
+  --jailbreak-template dan_1.yaml
 ```
 
 **G. Memory labels + verbose report**  
@@ -679,8 +749,9 @@ Not exposed in the CLI today (use Python / notebooks for these):
 - Extra OpenAI-compatible hosts **beyond** `compat:` + env (no arbitrary per-flag URL without `compat` or code changes).
 - **`HTTPTarget`** is only wired for **`prompt-sending-attack`** and **`red-teaming-attack`** (victim **`http`** or an **http(s) URL** + `--http-*` flags). Other non-chat victims (`AzureMLChatTarget`, `TextTarget`, `OpenAIImageTarget`, …) and advanced HTTP flows still need Python.
 - **LLM-backed** prompt converters.
-- **`tap-attack`**: no `--request-converter` / `--response-converter` wiring yet (use Python for `AttackConverterConfig`).
+- **`tap-attack`**: no `--request-converter` / `--response-converter` wiring yet (use Python for `AttackConverterConfig`). No **`--jailbreak-template`** on TAP in the CLI yet.
 - **`datasets inspect`**: previews only (text truncation); does not run attacks. Registered built-ins may download/cache on first fetch (same as PyRIT `SeedDatasetProvider`).
+- **`jailbreak-templates inspect`**: previews only (metadata + truncated rendered system prompt); does not call a model.
 
 ---
 
@@ -698,6 +769,7 @@ pyrit-cli redteam tap-attack --help
 pyrit-cli ask-ai --help
 pyrit-cli datasets list --help
 pyrit-cli datasets inspect --help
+pyrit-cli jailbreak-templates inspect --help
 pyrit-cli targets list
 pyrit-cli converters list-keys
 ```
