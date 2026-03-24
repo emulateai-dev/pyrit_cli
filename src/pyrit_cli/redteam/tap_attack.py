@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from pyrit.executor.attack import AttackAdversarialConfig, ConsoleAttackResultPrinter, TAPAttack
@@ -19,15 +20,22 @@ def _tap_scoring_config(
     scorer_chat_spec: str | None,
     adversarial_spec: str,
     score_threshold: float | None,
+    score_criteria_file: Path | None,
 ) -> TAPAttackScoringConfig | None:
     """Return None to use PyRIT default (SelfAskScaleScorer + threshold 0.7 on adversarial chat)."""
-    if scorer_chat_spec is None and score_threshold is None:
+    if scorer_chat_spec is None and score_threshold is None and score_criteria_file is None:
         return None
     adv_or_scorer_spec = scorer_chat_spec or adversarial_spec
     scorer_chat = openai_chat_from_spec(adv_or_scorer_spec)
+    if score_threshold is not None and not (0 <= score_threshold <= 1):
+        raise ValueError("--score-threshold must be between 0 and 1.")
     threshold = 0.7 if score_threshold is None else score_threshold
+    scale_arguments_path: str | Path | None = score_criteria_file
     wrapped = FloatScaleThresholdScorer(
-        scorer=SelfAskScaleScorer(chat_target=scorer_chat),
+        scorer=SelfAskScaleScorer(
+            chat_target=scorer_chat,
+            scale_arguments_path=scale_arguments_path,
+        ),
         threshold=threshold,
     )
     return TAPAttackScoringConfig(objective_scorer=wrapped)
@@ -48,6 +56,7 @@ async def run_tap_attack_async(
     memory_labels: dict[str, str] | None,
     scorer_chat_spec: str | None,
     score_threshold: float | None,
+    score_criteria_file: Path | None,
     include_adversarial_conversation: bool,
     include_pruned_conversations: bool,
 ) -> None:
@@ -64,6 +73,7 @@ async def run_tap_attack_async(
         scorer_chat_spec=scorer_chat_spec,
         adversarial_spec=adv_spec,
         score_threshold=score_threshold,
+        score_criteria_file=score_criteria_file,
     )
 
     adversarial_config = AttackAdversarialConfig(target=adversarial_chat)
@@ -95,7 +105,7 @@ async def run_tap_attack_async(
     print_attack_run_summary(
         [result],
         command="tap-attack",
-        tap_score_threshold=score_threshold,
+        tap_score_threshold=0.7 if score_threshold is None else score_threshold,
     )
 
 

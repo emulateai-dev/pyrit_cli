@@ -11,6 +11,7 @@ Reference for **setup**, **discover**, **ask-ai**, and **red-team** commands. In
 - **Scorers on raw text:** **`scorers eval`** runs **`self-ask-tf`** / **`self-ask-refusal`** on **`--text`**, **`--text-file`**, or stdin (**`-`**) with optional **`--objective`** — same wiring as **`red-teaming-attack`** presets (see [§ `scorers eval`](#scorers-eval)).
 - **TAP:** **`tap-attack`** does not expose **`--jailbreak-template`** in the CLI; use PyRIT in Python for advanced TAP options.
 - **Crescendo:** **`crescendo-attack`** runs multi-turn escalation with configurable backtracking.
+- **Benchmark pipeline:** **`benchmark-attack`** automates dataset benchmarking across baseline prompts, bundled jailbreak templates, and TAP fallback with HTML + JSON artifacts.
 
 **Quick map**
 
@@ -27,6 +28,7 @@ Reference for **setup**, **discover**, **ask-ai**, and **red-team** commands. In
 | Multi-turn attack | [`red-teaming-attack`](#2-red-teaming-attack-multi-turn) (converters, **`--jailbreak-template`** on victim) |
 | TAP | [`tap-attack`](#3-tap-attack-tree-of-attacks-with-pruning) |
 | Crescendo | [`crescendo-attack`](#4-crescendo-attack-multi-turn-backtracking) |
+| Automated benchmark | [`benchmark-attack`](#5-benchmark-attack-automated-pipeline) |
 | Scorer presets + **eval one string** | [`scorers list` / `scorers eval`](#scorers-eval) (discover table above) |
 
 **PyRIT docs (behavior and theory):**
@@ -777,7 +779,8 @@ All target flags use the same **`<provider>:<model>`** syntax as **red-teaming-a
 | `--batch-size` | no | Nodes per batch (default `10`) |
 | `--memory-labels-json` | no | JSON object of string labels for memory |
 | `--scorer-chat-target` | no | `SelfAskScaleScorer` chat `<provider>:<model>`; if both this and `--score-threshold` are omitted, PyRIT’s default scorer (adversarial chat, threshold 0.7) is used |
-| `--score-threshold` | no | Jailbreak threshold 0–1; if either this or `--scorer-chat-target` is set, builds custom `TAPAttackScoringConfig` |
+| `--score-threshold` | no | Jailbreak threshold 0–1; if set (or if scorer/criteria flags are set), builds custom `TAPAttackScoringConfig` |
+| `--score-criteria` (`--score-criteria-file`) | no | Path to YAML scale arguments consumed by `SelfAskScaleScorer` (custom score categories/levels); enables custom TAP scoring |
 | `--include-adversarial-conversation` | flag | Print red-team transcript (default on) |
 | `--include-pruned-conversations` | flag | Print pruned branches (default on) |
 
@@ -861,6 +864,82 @@ pyrit-cli redteam crescendo-attack \
 
 ---
 
+## 5. `benchmark-attack` (automated pipeline)
+
+Runs a multi-stage benchmark over a dataset:
+
+1. baseline prompt-sending per objective,
+2. retry unresolved prompts across bundled jailbreak templates,
+3. run TAP fallback on top-K remaining unresolved prompts,
+4. write `report.html` and `results.json`.
+
+The HTML report uses neutral branding (no library name in the title), an executive summary and methodology section, and a **Final results** table where each row expands to show base prompt, final prompt, response, outcome reason, and optional scorer detail.
+
+### Key options
+
+| Option | Description |
+|--------|-------------|
+| `--objective-target` | Victim chat target (`<provider>:<model>`). |
+| `--adversarial-target` | TAP red-team model (default: same as victim). If set and `--scorer-chat-target` is omitted, this model is also used to **evaluate** baseline, template, and TAP outcomes. |
+| `--scorer-chat-target` | Explicit evaluator for scoring (overrides the adversarial default above). |
+| `--dataset` | `pyrit:<path_or_registered_name>` or `hf:<org/dataset>`. |
+| `--limit` | Max prompts loaded from dataset (default `20`). |
+| `--template-include-glob` / `--template-exclude-glob` | Filter bundled jailbreak templates. |
+| `--max-templates` | Cap number of templates attempted (default `12`). |
+| `--tap-top-k` | TAP only on top-K unresolved prompts (default `5`). |
+| `--tap-tree-width` / `--tap-tree-depth` / `--tap-branching-factor` | TAP fallback search controls. |
+| `--tap-score-threshold` | TAP success threshold 0–1 (default `0.7`). |
+| `--progress` / `--no-progress` | Show or hide live progress bars for baseline/template/TAP stages (with live ASR in the task label when enabled). |
+| `--report-title` | Custom HTML report title and main heading (default: LLM security benchmark report). |
+| `--report-organization` | Optional subtitle (e.g. team or program name). |
+| `--output-dir` | Output directory for `report.html` and `results.json`. |
+
+### Examples
+
+**Baseline run** (victim only: TAP adversary and evaluator both default to the victim):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target openai:gpt-4o-mini \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 10 \
+  --max-templates 8 \
+  --tap-top-k 3 \
+  --output-dir ./benchmark-output
+```
+
+**Victim + red-team model** (`--adversarial-target` runs TAP; if `--scorer-chat-target` is omitted, that same model also scores baseline, template, and TAP outcomes—useful when the victim is strict but you want a separate model for adversarial turns and evaluation):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target groq:openai/gpt-oss-120b \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 10 \
+  --max-templates 8 \
+  --tap-top-k 1 \
+  --output-dir ./benchmark-output
+```
+
+**Explicit evaluator** (TAP uses `--adversarial-target`; scoring uses `--scorer-chat-target`):
+
+```bash
+pyrit-cli redteam benchmark-attack \
+  --objective-target openai:gpt-4o-mini \
+  --adversarial-target groq:llama-3.3-70b-versatile \
+  --scorer-chat-target openai:gpt-4o-mini \
+  --dataset pyrit:seed_datasets/local/airt/illegal.prompt \
+  --limit 10 \
+  --output-dir ./benchmark-output
+```
+
+### Notes
+
+- **`--limit`** is a *maximum*: if the dataset has fewer rows (e.g. some bundled `.prompt` files), `results.json` **metrics** will show the actual count loaded, not `--limit`.
+- If **baseline, templates, and TAP** all show failures with **TAP best score 0.0** (or TAP finishes with every branch pruned), the victim or provider may be blocking red-team-style content, or the **same** model may be a poor self-evaluator. Try **`--adversarial-target`** with a model allowed for adversarial dialogue, and optionally **`--scorer-chat-target`** if you want a different judge than the TAP model.
+
+---
+
 ## Limitations (vs full PyRIT)
 
 Not exposed in the CLI today (use Python / notebooks for these):
@@ -891,6 +970,7 @@ pyrit-cli redteam prompt-sending-attack --help
 pyrit-cli redteam red-teaming-attack --help
 pyrit-cli redteam tap-attack --help
 pyrit-cli redteam crescendo-attack --help
+pyrit-cli redteam benchmark-attack --help
 pyrit-cli scorers eval --help
 pyrit-cli ask-ai --help
 pyrit-cli datasets list --help

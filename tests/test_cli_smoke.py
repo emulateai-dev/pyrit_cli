@@ -140,6 +140,7 @@ def test_tap_attack_help() -> None:
     assert r.exit_code == 0
     assert "objective-target" in r.stdout
     assert "tree-width" in r.stdout
+    assert "--score-criteria" in r.stdout
 
 
 def test_crescendo_attack_help() -> None:
@@ -151,6 +152,18 @@ def test_crescendo_attack_help() -> None:
     assert r.exit_code == 0
     assert "max-backtracks" in r.stdout
     assert "objective-target" in r.stdout
+
+
+def test_benchmark_attack_help() -> None:
+    r = runner.invoke(
+        app,
+        ["redteam", "benchmark-attack", "--help"],
+        env={"COLUMNS": "200", "LINES": "60"},
+    )
+    assert r.exit_code == 0
+    assert "--dataset" in r.stdout
+    assert "--tap-top-k" in r.stdout
+    assert "--output-dir" in r.stdout
 
 
 def test_prompt_sending_http_requires_parser(tmp_path) -> None:

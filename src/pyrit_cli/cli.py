@@ -48,6 +48,7 @@ from pyrit_cli.redteam.prompt_sending import collect_objectives, run_prompt_send
 from pyrit_cli.redteam.red_teaming import parse_memory_labels_json, run_red_teaming
 from pyrit_cli.redteam.tap_attack import run_tap_attack
 from pyrit_cli.redteam.crescendo_attack import run_crescendo_attack
+from pyrit_cli.redteam.benchmark_attack import run_benchmark_attack
 from pyrit_cli.redteam.targets import TARGET_SPEC_HELP
 from pyrit_cli.telemetry import setup_phoenix_tracing
 
@@ -352,6 +353,7 @@ def _redteam_group(ctx: typer.Context) -> None:
         typer.echo("  red-teaming-attack    — multi-turn RedTeamingAttack.")
         typer.echo("  crescendo-attack      — multi-turn CrescendoAttack with backtracking.")
         typer.echo("  tap-attack            — Tree of Attacks with Pruning (TAPAttack).")
+        typer.echo("  benchmark-attack      — dataset benchmark: baseline -> templates -> TAP fallback.")
         typer.echo(
             "Discover: converters list | converters run | jailbreak-templates list | jailbreak-templates inspect | "
             "scorers list | scorers eval | targets list | datasets list | datasets inspect"
@@ -750,6 +752,21 @@ def redteam_tap_attack(
         "--score-threshold",
         help="Jailbreak score threshold (0-1). If set with defaults, builds custom TAP scoring.",
     ),
+    score_criteria_file: Path | None = typer.Option(
+        None,
+        "--score-criteria",
+        "--score-criteria-file",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help=(
+            "Optional YAML file for SelfAskScaleScorer scale arguments "
+            "(custom categories/levels). Alias: --score-criteria-file. "
+            "Passing this enables custom TAP scoring."
+        ),
+    ),
     include_adversarial_conversation: bool = typer.Option(
         True,
         "--include-adversarial-conversation/--no-include-adversarial-conversation",
@@ -794,6 +811,7 @@ def redteam_tap_attack(
             memory_labels=memory_labels,
             scorer_chat_spec=scorer_chat_target,
             score_threshold=score_threshold,
+            score_criteria_file=score_criteria_file,
             include_adversarial_conversation=include_adversarial_conversation,
             include_pruned_conversations=include_pruned_conversations,
         )
@@ -902,6 +920,131 @@ def redteam_crescendo_attack(
             memory_labels=memory_labels,
         )
     except ValueError as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+    except Exception as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+
+@redteam_app.command("benchmark-attack")
+def redteam_benchmark_attack(
+    objective_target: str = typer.Option(..., "--objective-target", help=f"Victim model: {TARGET_SPEC_HELP}"),
+    dataset: str = typer.Option(
+        ...,
+        "--dataset",
+        help="Dataset spec: pyrit:<path_or_registered_name> or hf:<org/dataset>",
+    ),
+    hf_split: str = typer.Option("train", "--hf-split"),
+    hf_column: str = typer.Option("text", "--hf-column"),
+    hf_config: str | None = typer.Option(None, "--hf-config"),
+    limit: int | None = typer.Option(20, "--limit", min=1, help="Max prompts to benchmark."),
+    scorer_chat_target: str | None = typer.Option(
+        None,
+        "--scorer-chat-target",
+        help=(
+            f"Evaluator model for baseline/template refusal scoring and TAP float scoring. "
+            f"If omitted, uses --adversarial-target when set, else the victim. {TARGET_SPEC_HELP}"
+        ),
+    ),
+    adversarial_target: str | None = typer.Option(
+        None,
+        "--adversarial-target",
+        help=(
+            f"TAP adversarial (red-team) model; default: victim. "
+            f"When set and --scorer-chat-target is omitted, also used as the evaluator for all stages. "
+            f"{TARGET_SPEC_HELP}"
+        ),
+    ),
+    template_include_glob: str | None = typer.Option(
+        None,
+        "--template-include-glob",
+        help="Optional fnmatch glob for bundled templates relative paths.",
+    ),
+    template_exclude_glob: str | None = typer.Option(
+        None,
+        "--template-exclude-glob",
+        help="Optional fnmatch glob to skip bundled templates.",
+    ),
+    max_templates: int = typer.Option(
+        12,
+        "--max-templates",
+        min=1,
+        help="Maximum number of bundled templates to try on failed prompts.",
+    ),
+    tap_top_k: int = typer.Option(
+        5,
+        "--tap-top-k",
+        min=1,
+        help="Run TAP only on top-K unresolved prompts after template retries.",
+    ),
+    tap_tree_width: int = typer.Option(3, "--tap-tree-width", min=1),
+    tap_tree_depth: int = typer.Option(3, "--tap-tree-depth", min=1),
+    tap_branching_factor: int = typer.Option(2, "--tap-branching-factor", min=1),
+    tap_score_threshold: float = typer.Option(0.7, "--tap-score-threshold"),
+    show_progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Show stage progress bars while benchmark runs.",
+    ),
+    report_title: str | None = typer.Option(
+        None,
+        "--report-title",
+        help="HTML report <title> and main heading (default: LLM security benchmark report).",
+    ),
+    report_organization: str | None = typer.Option(
+        None,
+        "--report-organization",
+        help="Optional subtitle line under the report title (e.g. team or program name).",
+    ),
+    output_dir: Path = typer.Option(
+        Path("benchmark-output"),
+        "--output-dir",
+        help="Directory to write report.html and results.json.",
+    ),
+) -> None:
+    if is_http_victim_spec(objective_target):
+        typer.secho(
+            "benchmark-attack currently supports chat objective targets only (no HTTP victim).",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+    if not (0 <= tap_score_threshold <= 1):
+        typer.secho("--tap-score-threshold must be between 0 and 1.", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.secho(
+        "Authorized red-teaming only. benchmark-attack can be expensive; use with approved targets and capped limits.",
+        err=True,
+        fg=typer.colors.YELLOW,
+    )
+    try:
+        html_path, json_path = run_benchmark_attack(
+            objective_target_spec=objective_target,
+            dataset=dataset,
+            hf_split=hf_split,
+            hf_column=hf_column,
+            hf_config=hf_config,
+            limit=limit,
+            scorer_chat_target=scorer_chat_target,
+            adversarial_target=adversarial_target,
+            template_include_glob=template_include_glob,
+            template_exclude_glob=template_exclude_glob,
+            max_templates=max_templates,
+            tap_top_k=tap_top_k,
+            tap_tree_width=tap_tree_width,
+            tap_tree_depth=tap_tree_depth,
+            tap_branching_factor=tap_branching_factor,
+            tap_score_threshold=tap_score_threshold,
+            output_dir=output_dir,
+            show_progress=show_progress,
+            report_title=report_title,
+            report_organization=report_organization,
+        )
+        typer.secho(f"Benchmark report: {html_path}", fg=typer.colors.GREEN)
+        typer.secho(f"Benchmark JSON:   {json_path}", fg=typer.colors.GREEN)
+    except (ValueError, FileNotFoundError, ImportError) as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from e
     except Exception as e:

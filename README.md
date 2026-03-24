@@ -109,7 +109,7 @@ If you used an **OpenAI-compatible** wizard (e.g. Groq), the model id in `openai
 | **Tool lifecycle** | `pyrit-cli uv-install`, `pyrit-cli uv-update` |
 | **Help via LLM** | `pyrit-cli ask-ai "…"` (optional `--http-request-file` / `--http-response-sample`) |
 | **Discover** | `targets list`, `datasets list`, `datasets inspect`, `converters list`, `converters list-keys`, `converters run`, `converters image ...`, `jailbreak-templates list`, `scorers list` |
-| **Red team** | `redteam prompt-sending-attack`, `redteam red-teaming-attack`, `redteam tap-attack` |
+| **Red team** | `redteam prompt-sending-attack`, `redteam red-teaming-attack`, `redteam tap-attack`, `redteam benchmark-attack` |
 
 ### Stateless converters on arbitrary text
 
