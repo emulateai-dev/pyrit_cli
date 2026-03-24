@@ -10,6 +10,7 @@ from pyrit.executor.attack.multi_turn.tree_of_attacks import TAPAttackScoringCon
 from pyrit.score import FloatScaleThresholdScorer, SelfAskScaleScorer
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
+from pyrit_cli.redteam.attack_run_summary import print_attack_run_summary
 from pyrit_cli.redteam.targets import openai_chat_from_spec
 
 
@@ -89,6 +90,12 @@ async def run_tap_attack_async(
         result,
         include_adversarial_conversation=include_adversarial_conversation,
         include_pruned_conversations=include_pruned_conversations,
+    )
+
+    print_attack_run_summary(
+        [result],
+        command="tap-attack",
+        tap_score_threshold=score_threshold,
     )
 
 

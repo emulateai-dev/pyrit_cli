@@ -142,6 +142,17 @@ def test_tap_attack_help() -> None:
     assert "tree-width" in r.stdout
 
 
+def test_crescendo_attack_help() -> None:
+    r = runner.invoke(
+        app,
+        ["redteam", "crescendo-attack", "--help"],
+        env={"COLUMNS": "200", "LINES": "60"},
+    )
+    assert r.exit_code == 0
+    assert "max-backtracks" in r.stdout
+    assert "objective-target" in r.stdout
+
+
 def test_prompt_sending_http_requires_parser(tmp_path) -> None:
     req = tmp_path / "a.req"
     req.write_text(
@@ -187,6 +198,23 @@ def test_tap_attack_rejects_https_url_victim() -> None:
         env={"COLUMNS": "200"},
     )
     assert r.exit_code != 0
+
+
+def test_crescendo_attack_rejects_http_victim() -> None:
+    r = runner.invoke(
+        app,
+        [
+            "redteam",
+            "crescendo-attack",
+            "--objective-target",
+            "http",
+            "--objective",
+            "x",
+        ],
+        env={"COLUMNS": "200"},
+    )
+    assert r.exit_code != 0
+    assert "http" in r.stdout.lower() or "http" in r.stderr.lower()
 
 
 def test_prompt_sending_https_url_requires_parser(tmp_path) -> None:

@@ -22,6 +22,7 @@ from pyrit.models import SeedDataset
 from pyrit.score import SelfAskRefusalScorer, SelfAskTrueFalseScorer, TrueFalseInverterScorer, TrueFalseQuestion
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
+from pyrit_cli.redteam.attack_run_summary import print_attack_run_summary
 from pyrit_cli.redteam.http_target_cli import (
     build_http_json_escape_converter_config,
     build_http_objective_target,
@@ -29,6 +30,7 @@ from pyrit_cli.redteam.http_target_cli import (
     parse_objective_http_url,
 )
 from pyrit_cli.redteam.jailbreak_prepended import build_jailbreak_prepended_conversation
+from pyrit_cli.redteam.multimodal_input import build_seed_group, target_supports_image_input, validate_image_paths
 from pyrit_cli.redteam.targets import openai_chat_from_spec, parse_target_spec
 
 
@@ -188,6 +190,8 @@ async def run_prompt_sending_async(
     scorer_chat_target: str | None = None,
     jailbreak_template: str | None = None,
     jailbreak_template_params: list[str] | None = None,
+    input_images: list[str] | None = None,
+    input_text: str | None = None,
 ) -> None:
     await initialize_pyrit_async(memory_db_type=IN_MEMORY)  # type: ignore[arg-type]
 
@@ -231,13 +235,37 @@ async def run_prompt_sending_async(
     executor = AttackExecutor()
     printer = ConsoleAttackResultPrinter()
 
-    results = await executor.execute_attack_async(
-        attack=attack,
-        objectives=list(objectives),
-        prepended_conversation=prepended_conversation,
-    )
+    images = validate_image_paths(list(input_images or []))
+    has_multimodal = bool(images) or bool((input_text or "").strip())
+    if has_multimodal:
+        if not target_supports_image_input(chat_target):
+            raise ValueError(
+                "Target does not appear to support image input. Use a vision-capable target or remove --input-image."
+            )
+        seed_group = build_seed_group(input_text=input_text, input_images=images)
+        results = []
+        for objective in objectives:
+            result = await attack.execute_async(  # type: ignore[misc]
+                objective=objective,
+                prepended_conversation=prepended_conversation,
+                next_message=seed_group.next_message,
+            )
+            results.append(result)
+    else:
+        results = await executor.execute_attack_async(
+            attack=attack,
+            objectives=list(objectives),
+            prepended_conversation=prepended_conversation,
+        )
     for result in results:
         await printer.print_result_async(result)
+
+    print_attack_run_summary(
+        results,
+        command="prompt-sending-attack",
+        scoring_mode=scoring_mode,
+        scorer_preset=scorer_preset,
+    )
 
 
 def run_prompt_sending(

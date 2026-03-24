@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import threading
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from importlib.util import find_spec
 from collections.abc import Callable
 
@@ -62,29 +64,47 @@ def setup_phoenix_tracing(
 
         try:
             auto_instrument = _env_enabled("PHOENIX_AUTO_INSTRUMENT", default=False)
-            tracer_provider = register(
-                project_name=project_name,
-                endpoint=endpoint,
-                protocol="http/protobuf",
-                auto_instrument=auto_instrument,
-            )
+            quiet = not _env_enabled("PHOENIX_TRACE_DEBUG", default=False)
+            if quiet:
+                with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                    tracer_provider = register(
+                        project_name=project_name,
+                        endpoint=endpoint,
+                        protocol="http/protobuf",
+                        auto_instrument=auto_instrument,
+                    )
+            else:
+                tracer_provider = register(
+                    project_name=project_name,
+                    endpoint=endpoint,
+                    protocol="http/protobuf",
+                    auto_instrument=auto_instrument,
+                )
             try:
                 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
-                HTTPXClientInstrumentor().instrument(tracer_provider=tracer_provider)
+                instr = HTTPXClientInstrumentor()
+                if not getattr(instr, "is_instrumented_by_opentelemetry", False):
+                    instr.instrument(tracer_provider=tracer_provider)
             except Exception:
                 pass
-            if find_spec("langchain_core") is not None:
+            # LangChain instrumentation can emit noisy dependency-conflict warnings in mixed envs.
+            # Keep it opt-in via PHOENIX_INSTRUMENT_LANGCHAIN=true.
+            if _env_enabled("PHOENIX_INSTRUMENT_LANGCHAIN", default=False) and find_spec("langchain_core") is not None:
                 try:
                     from openinference.instrumentation.langchain import LangChainInstrumentor
 
-                    LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+                    instr = LangChainInstrumentor()
+                    if not getattr(instr, "is_instrumented_by_opentelemetry", False):
+                        instr.instrument(tracer_provider=tracer_provider)
                 except Exception:
                     pass
             try:
                 from openinference.instrumentation.openai import OpenAIInstrumentor
 
-                OpenAIInstrumentor().instrument(tracer_provider=tracer_provider)
+                instr = OpenAIInstrumentor()
+                if not getattr(instr, "is_instrumented_by_opentelemetry", False):
+                    instr.instrument(tracer_provider=tracer_provider)
             except Exception:
                 pass
             _TRACE_STATE["enabled"] = True

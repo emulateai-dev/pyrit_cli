@@ -13,6 +13,13 @@ from dotenv import load_dotenv
 
 from pyrit_cli import __version__
 from pyrit_cli.discover.converter_run import run_converter_pipeline_sync
+from pyrit_cli.discover.converter_image_run import (
+    run_image_add_image_text_sync,
+    run_image_add_text_image_sync,
+    run_image_compress_sync,
+    run_image_qrcode_sync,
+    run_image_transparency_sync,
+)
 from pyrit_cli.discover.converters_list import list_converters_json, list_converters_text
 from pyrit_cli.discover.jailbreak_templates_list import (
     list_jailbreak_templates_json,
@@ -40,6 +47,7 @@ from pyrit_cli.redteam.http_target_cli import is_http_victim_spec
 from pyrit_cli.redteam.prompt_sending import collect_objectives, run_prompt_sending
 from pyrit_cli.redteam.red_teaming import parse_memory_labels_json, run_red_teaming
 from pyrit_cli.redteam.tap_attack import run_tap_attack
+from pyrit_cli.redteam.crescendo_attack import run_crescendo_attack
 from pyrit_cli.redteam.targets import TARGET_SPEC_HELP
 from pyrit_cli.telemetry import setup_phoenix_tracing
 
@@ -342,6 +350,7 @@ def _redteam_group(ctx: typer.Context) -> None:
         typer.echo("Commands:")
         typer.echo("  prompt-sending-attack — single-turn PromptSendingAttack.")
         typer.echo("  red-teaming-attack    — multi-turn RedTeamingAttack.")
+        typer.echo("  crescendo-attack      — multi-turn CrescendoAttack with backtracking.")
         typer.echo("  tap-attack            — Tree of Attacks with Pruning (TAPAttack).")
         typer.echo(
             "Discover: converters list | converters run | jailbreak-templates list | jailbreak-templates inspect | "
@@ -433,6 +442,16 @@ def redteam_prompt_sending(
         "--jailbreak-template-param",
         help="Template parameter as key=value (repeatable). Requires --jailbreak-template.",
     ),
+    input_image: list[str] | None = typer.Option(
+        None,
+        "--input-image",
+        help="Repeatable image path to attach to each prompt as image_path piece (vision targets).",
+    ),
+    input_text: str | None = typer.Option(
+        None,
+        "--input-text",
+        help="Optional extra user text piece to send before image pieces.",
+    ),
 ) -> None:
     try:
         objectives = collect_objectives(
@@ -486,6 +505,8 @@ def redteam_prompt_sending(
             scorer_chat_target=scorer_chat_target,
             jailbreak_template=jailbreak_template,
             jailbreak_template_params=list(jailbreak_template_param or []),
+            input_images=list(input_image or []),
+            input_text=input_text,
         )
     except Exception as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
@@ -608,6 +629,16 @@ def redteam_red_teaming(
         "--jailbreak-template-param",
         help="Template key=value (repeatable). Requires --jailbreak-template.",
     ),
+    input_image: list[str] | None = typer.Option(
+        None,
+        "--input-image",
+        help="Repeatable image path to attach as image_path piece (vision targets).",
+    ),
+    input_text: str | None = typer.Option(
+        None,
+        "--input-text",
+        help="Optional extra user text piece sent with image pieces.",
+    ),
 ) -> None:
     try:
         memory_labels = parse_memory_labels_json(memory_labels_json)
@@ -661,6 +692,8 @@ def redteam_red_teaming(
             http_model_name=http_model_name,
             jailbreak_template=jailbreak_template,
             jailbreak_template_params=list(jailbreak_template_param or []),
+            input_images=list(input_image or []),
+            input_text=input_text,
         )
     except ValueError as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
@@ -772,8 +805,112 @@ def redteam_tap_attack(
         raise typer.Exit(code=1) from e
 
 
+@redteam_app.command("crescendo-attack")
+def redteam_crescendo_attack(
+    objective_target: str = typer.Option(
+        ...,
+        "--objective-target",
+        help=f"Victim model: {TARGET_SPEC_HELP}",
+    ),
+    objective: str = typer.Option(..., "--objective", help="Conversation objective for Crescendo."),
+    adversarial_target: str | None = typer.Option(
+        None,
+        "--adversarial-target",
+        help=f"Red-team LLM; default: same as --objective-target. {TARGET_SPEC_HELP}",
+    ),
+    max_turns: int = typer.Option(7, "--max-turns", min=1),
+    max_backtracks: int = typer.Option(4, "--max-backtracks", min=0),
+    memory_labels_json: str | None = typer.Option(
+        None,
+        "--memory-labels-json",
+        help='Optional JSON object of string labels.',
+    ),
+    scorer_preset: str = typer.Option(
+        "self-ask-tf",
+        "--scorer-preset",
+        help="self-ask-tf | self-ask-refusal",
+    ),
+    true_description: str | None = typer.Option(
+        None,
+        "--true-description",
+        help="Required for self-ask-tf: criterion for True (objective met).",
+    ),
+    refusal_mode: str = typer.Option(
+        "default",
+        "--refusal-mode",
+        help="For self-ask-refusal: default | strict",
+    ),
+    scorer_chat_target: str | None = typer.Option(
+        None,
+        "--scorer-chat-target",
+        help=f"Scorer LLM target; default: adversarial target. {TARGET_SPEC_HELP}",
+    ),
+    request_converter: list[str] | None = typer.Option(
+        None,
+        "--request-converter",
+        help="Stack stateless converters (order matters). Run: pyrit-cli converters list-keys",
+    ),
+    response_converter: list[str] | None = typer.Option(
+        None,
+        "--response-converter",
+        help="Response-side converter stack.",
+    ),
+    include_adversarial_conversation: bool = typer.Option(
+        True,
+        "--include-adversarial-conversation/--no-include-adversarial-conversation",
+    ),
+    include_pruned_conversations: bool = typer.Option(
+        True,
+        "--include-pruned-conversations/--no-include-pruned-conversations",
+    ),
+) -> None:
+    if is_http_victim_spec(objective_target):
+        typer.secho(
+            "crescendo-attack does not support HTTP victim targets (--objective-target `http` or an http(s) URL); "
+            "use a chat target.",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        memory_labels = parse_memory_labels_json(memory_labels_json)
+    except (ValueError, json.JSONDecodeError) as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+    typer.secho(
+        "Authorized red-teaming only. Crescendo may be high-cost and high-risk; use only on approved targets.",
+        err=True,
+        fg=typer.colors.YELLOW,
+    )
+    try:
+        run_crescendo_attack(
+            objective_target_spec=objective_target,
+            objective=objective,
+            adversarial_target_spec=adversarial_target,
+            max_turns=max_turns,
+            max_backtracks=max_backtracks,
+            scorer_preset=scorer_preset,
+            true_description=true_description,
+            refusal_mode=refusal_mode,
+            scorer_chat_spec=scorer_chat_target,
+            request_converter_keys=list(request_converter or []),
+            response_converter_keys=list(response_converter or []),
+            include_adversarial_conversation=include_adversarial_conversation,
+            include_pruned_conversations=include_pruned_conversations,
+            memory_labels=memory_labels,
+        )
+    except ValueError as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+    except Exception as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+
 converters_app = typer.Typer(
-    help="Discover PyRIT prompt converters (modalities) and run stateless text converters.",
+    help="Discover PyRIT prompt converters and run stateless text/image converter commands.",
 )
 app.add_typer(converters_app, name="converters")
 
@@ -829,6 +966,90 @@ def converters_run_cmd(
     except ValueError as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from e
+    except Exception as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+
+converters_image_app = typer.Typer(help="Run selected PyRIT image converters from the CLI.")
+converters_app.add_typer(converters_image_app, name="image")
+
+
+@converters_image_app.command("list-keys")
+def converters_image_list_keys() -> None:
+    typer.echo("Image converter commands:")
+    typer.echo("  qrcode          text -> image path")
+    typer.echo("  compress        image path -> image path")
+    typer.echo("  add-text-image  image path + text -> image path")
+    typer.echo("  add-image-text  base image + text -> image path")
+    typer.echo("  transparency    benign image + attack image -> blended image path")
+
+
+@converters_image_app.command("qrcode")
+def converters_image_qrcode(
+    text: str = typer.Argument(..., help="Text to encode into a QR image."),
+) -> None:
+    try:
+        typer.echo(run_image_qrcode_sync(text))
+    except Exception as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+
+@converters_image_app.command("compress")
+def converters_image_compress(
+    input_path: Path = typer.Option(..., "--input", exists=True, file_okay=True, dir_okay=False),
+    quality: int = typer.Option(50, "--quality", min=1, max=100),
+) -> None:
+    try:
+        typer.echo(run_image_compress_sync(input_path, quality=quality))
+    except Exception as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+
+@converters_image_app.command("add-text-image")
+def converters_image_add_text_image(
+    image: Path = typer.Option(..., "--image", exists=True, file_okay=True, dir_okay=False),
+    text: str = typer.Option(..., "--text", help="Text to overlay onto the image."),
+) -> None:
+    try:
+        typer.echo(run_image_add_text_image_sync(image, text=text))
+    except Exception as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+
+@converters_image_app.command("add-image-text")
+def converters_image_add_image_text(
+    base_image: Path = typer.Option(..., "--base-image", exists=True, file_okay=True, dir_okay=False),
+    text: str = typer.Option(..., "--text", help="Text prompt rendered with the converter onto base image."),
+) -> None:
+    try:
+        typer.echo(run_image_add_image_text_sync(base_image, text=text))
+    except Exception as e:
+        typer.secho(str(e), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from e
+
+
+@converters_image_app.command("transparency")
+def converters_image_transparency(
+    benign: Path = typer.Option(..., "--benign", exists=True, file_okay=True, dir_okay=False),
+    attack: Path = typer.Option(..., "--attack", exists=True, file_okay=True, dir_okay=False),
+    size: int = typer.Option(150, "--size", min=16, max=4096, help="Output width/height (square)."),
+    steps: int = typer.Option(1500, "--steps", min=1, help="Optimization steps."),
+    learning_rate: float = typer.Option(0.001, "--learning-rate", min=0.000001, help="Optimizer learning rate."),
+) -> None:
+    try:
+        typer.echo(
+            run_image_transparency_sync(
+                benign,
+                attack,
+                size=size,
+                steps=steps,
+                learning_rate=learning_rate,
+            )
+        )
     except Exception as e:
         typer.secho(str(e), err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from e

@@ -10,6 +10,7 @@ Reference for **setup**, **discover**, **ask-ai**, and **red-team** commands. In
 - **Single-turn scoring:** **`prompt-sending-attack`** supports **`--scoring-mode`** (`auto` \| `off` \| `configured`), **`--scorer-preset`**, **`--scorer-chat-target`**, and **`--true-description`** where applicable. Local victims (`ollama:`, …) may auto-fallback the scorer to **`openai:${OPENAI_CHAT_MODEL}`** when set.
 - **Scorers on raw text:** **`scorers eval`** runs **`self-ask-tf`** / **`self-ask-refusal`** on **`--text`**, **`--text-file`**, or stdin (**`-`**) with optional **`--objective`** — same wiring as **`red-teaming-attack`** presets (see [§ `scorers eval`](#scorers-eval)).
 - **TAP:** **`tap-attack`** does not expose **`--jailbreak-template`** in the CLI; use PyRIT in Python for advanced TAP options.
+- **Crescendo:** **`crescendo-attack`** runs multi-turn escalation with configurable backtracking.
 
 **Quick map**
 
@@ -25,6 +26,7 @@ Reference for **setup**, **discover**, **ask-ai**, and **red-team** commands. In
 | Single-turn attack | [`prompt-sending-attack`](#1-prompt-sending-attack-single-turn) (datasets, scoring, **`--jailbreak-template`**) |
 | Multi-turn attack | [`red-teaming-attack`](#2-red-teaming-attack-multi-turn) (converters, **`--jailbreak-template`** on victim) |
 | TAP | [`tap-attack`](#3-tap-attack-tree-of-attacks-with-pruning) |
+| Crescendo | [`crescendo-attack`](#4-crescendo-attack-multi-turn-backtracking) |
 | Scorer presets + **eval one string** | [`scorers list` / `scorers eval`](#scorers-eval) (discover table above) |
 
 **PyRIT docs (behavior and theory):**
@@ -32,6 +34,7 @@ Reference for **setup**, **discover**, **ask-ai**, and **red-team** commands. In
 - Single-turn: [Prompt Sending Attack](https://azure.github.io/PyRIT/code/executor/attack/prompt-sending-attack/)
 - Multi-turn: [Red Teaming Attack](https://azure.github.io/PyRIT/code/executor/attack/red-teaming-attack/)
 - Tree of Attacks with Pruning: [TAP attack](https://azure.github.io/PyRIT/code/executor/attack/tap-attack/)
+- Crescendo multi-turn attack: [Crescendo attack](https://azure.github.io/PyRIT/code/executor/attack/crescendo-attack/)
 - Raw HTTP victim: [HTTP Target](https://azure.github.io/PyRIT/code/targets/http-target/)
 - Targets overview (Responses API vs chat): [OpenAI Responses Target](https://azure.github.io/PyRIT/code/targets/openai-responses-target/)
 - Built-in / registered datasets (names, loading): [Loading built-in datasets](https://azure.github.io/PyRIT/code/datasets/loading-datasets/)
@@ -368,7 +371,26 @@ echo "plain" | pyrit-cli converters run -c base64
 
 - Pass **input** as a **positional** argument, or omit it to read **stdin** (trailing newlines are stripped). Empty stdin with no argument is an error.
 - **LLM-backed** converters (variation, translation, …) are **not** available here; use PyRIT in Python or see [Text-to-text converters](https://azure.github.io/PyRIT/code/converters/text-to-text-converters/).
-- **Text-to-image** and other **image** converters are **not** exposed as a CLI subcommand; use Python with [Image converters](https://azure.github.io/PyRIT/code/converters/image-converters/) (see below).
+
+#### `converters image` (image converters)
+
+Runs selected PyRIT image converters through dedicated subcommands:
+
+```bash
+pyrit-cli converters image list-keys
+pyrit-cli converters image qrcode "https://example.org/lab-note"
+pyrit-cli converters image compress --input ./in.png --quality 60
+pyrit-cli converters image add-text-image --image ./in.png --text "benign overlay"
+pyrit-cli converters image add-image-text --base-image ./in.png --text "benign prompt text"
+pyrit-cli converters image transparency --benign ./benign.jpg --attack ./attack.jpg
+```
+
+- `qrcode`: text -> QR image path.
+- `compress`: image path -> compressed image path (`--quality`).
+- `add-text-image`: overlay `--text` on `--image`.
+- `add-image-text`: render prompt text onto a base image.
+- `transparency`: blend benign/attack JPEGs into a dual-perception output image.
+- LLM-backed text converters are still Python-only.
 
 #### `jailbreak-templates list`
 
@@ -397,9 +419,9 @@ pyrit-cli jailbreak-templates inspect foo.yaml --param role=analyst --param topi
 pyrit-cli jailbreak-templates inspect dup.yaml --relative-path subdir/dup.yaml
 ```
 
-#### Image converters and jailbreak templates (Python)
+#### Image converters and jailbreak templates (Python, advanced)
 
-The workshop CLI does **not** run **`QRCodeConverter`**, **`AddImageTextConverter`**, or similar image pipelines. Follow [PyRIT: Image converters](https://azure.github.io/PyRIT/code/converters/image-converters/) in Python. A typical shape is: render jailbreak text with **`TextJailBreak`**, then pass that string into an image converter (e.g. QR or text-on-image) inside an **`async`** flow after **`initialize_pyrit_async`**.
+For custom image pipelines beyond the CLI wrappers, follow [PyRIT: Image converters](https://azure.github.io/PyRIT/code/converters/image-converters/) in Python. A typical shape is: render jailbreak text with **`TextJailBreak`**, then pass that string into an image converter (e.g. QR or text-on-image) inside an **`async`** flow after **`initialize_pyrit_async`**.
 
 ```python
 # Sketch only — run inside async code after initialize_pyrit_async(..., silent=True).
@@ -454,6 +476,8 @@ Maps to PyRIT **`PromptSendingAttack`**: one user-style objective per execution 
 | `--scorer-chat-target` | no | Scorer LLM target; **required** for scoring when the victim is HTTP. For **`ollama:`** / **`lmstudio:`** / **`compat:`**, if unset the scorer may auto-fallback to **`openai:${OPENAI_CHAT_MODEL}`** when that env is set (Self-ask scorers need JSON-capable chat targets) |
 | `--jailbreak-template` | no | Optional `TextJailBreak` template: **bundled basename** (e.g. `dan_1.yaml`) or **path to a `.yaml` file** on disk; prepended as system message. Preview with **`jailbreak-templates inspect`** (which also accepts paths) |
 | `--jailbreak-template-param` | no | Repeatable `key=value` for template placeholders (besides `prompt`); requires `--jailbreak-template` |
+| `--input-image` | no | Repeatable image path added as `image_path` input piece (for vision-capable targets). |
+| `--input-text` | no | Optional extra text piece sent with any `--input-image` values. |
 
 You must supply **either** `--objective` **or** `--dataset`, not both.
 
@@ -462,7 +486,9 @@ You must supply **either** `--objective` **or** `--dataset`, not both.
 - **`--scoring-mode auto`** (default): objective scorer is **inverted refusal** (non-refusal ⇒ success). Ignores `--scorer-preset`.
 - **`--scoring-mode configured`**: use **`--scorer-preset`** (`non-refusal`, `refusal`, or `self-ask-tf` + **`--true-description`**).
 - **`--scoring-mode off`**: no objective scorer (outcomes may show as undetermined), same as bare PyRIT examples.
-- Aggregate **ASR** over many runs is still **manual** (count successes in output) unless you use a notebook or your own script.
+
+**Run summary (ASR)**  
+After all per-objective reports, the CLI prints a **Run summary** block: counts of **`SUCCESS` / `FAILURE` / `UNDETERMINED`**, **ASR** = `SUCCESS / total` (unless every outcome is **UNDETERMINED**, in which case ASR is labeled not meaningful). A short note explains what **SUCCESS** means for your **`--scoring-mode`** / preset.
 
 ### Flavors
 
@@ -573,6 +599,11 @@ Maps to PyRIT **`RedTeamingAttack`**: an **adversarial** chat model proposes pro
 | `--include-adversarial-conversation` | flag | Include red-team LLM transcript in printed report |
 | `--jailbreak-template` | no | Optional `TextJailBreak` template: bundled basename (e.g. `dan_1.yaml`) or path to a `.yaml` file; prepended to **victim** context before the red-team loop (same idea as [PyRIT prepended conversation](https://azure.github.io/PyRIT/code/executor/attack/prompt-sending-attack/)). Preview: **`jailbreak-templates inspect`** |
 | `--jailbreak-template-param` | no | Repeatable `key=value` for template placeholders (besides `prompt`); requires `--jailbreak-template` |
+| `--input-image` | no | Repeatable image path added as `image_path` input piece (for vision-capable objective targets). |
+| `--input-text` | no | Optional extra text piece sent with any `--input-image` values. |
+
+**Run summary**  
+After the printed attack report, the CLI emits the same **Run summary** footer as **`prompt-sending-attack`** (one run: **n=1** counts and ASR 0% or 100%). The note reflects **`--scorer-preset`** (`self-ask-tf` vs `self-ask-refusal`).
 
 ### Stateless `--request-converter` / `--response-converter` keys
 
@@ -581,6 +612,8 @@ These are the built-in CLI registry keys (no extra LLM for conversion):
 `ascii-art`, `atbash`, `base64`, `binary`, `braille`, `ecoji`, `emoji`, `first-letter`, `morse`, `rot13`, `string-join`, `unicode-confusable`
 
 LLM-based converters (e.g. variation, translation) are **not** wired in the CLI yet (including **`converters run`** — stateless keys only; see [Text-to-text converters](https://azure.github.io/PyRIT/code/converters/text-to-text-converters/)).
+
+`--request-converter` / `--response-converter` stay **text-only**. Image payloads for red-team runs use `--input-image` / `--input-text`.
 
 ### Flavors
 
@@ -748,6 +781,9 @@ All target flags use the same **`<provider>:<model>`** syntax as **red-teaming-a
 | `--include-adversarial-conversation` | flag | Print red-team transcript (default on) |
 | `--include-pruned-conversations` | flag | Print pruned branches (default on) |
 
+**Run summary**  
+After the printed TAP report, the CLI emits the same **Run summary** footer (**n=1**). **SUCCESS** means the TAP run’s float score met **`--score-threshold`** (default **0.7** when PyRIT’s default scorer is used; the note states the threshold used).
+
 ### Example (lab-style, same model)
 
 ```bash
@@ -774,6 +810,57 @@ pyrit-cli redteam tap-attack \
 
 ---
 
+## 4. `crescendo-attack` (multi-turn backtracking)
+
+Maps to PyRIT **`CrescendoAttack`**: an adversarial model progressively escalates prompts toward the objective and can backtrack when a path stalls/refuses.
+
+### Options (reference)
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `--objective-target` | yes | Chat victim `<provider>:<model>` only — **HTTP victim** (`http` or http(s) URL) is not allowed. |
+| `--objective` | yes | Conversation objective string |
+| `--adversarial-target` | no | Red-team LLM; default = `--objective-target` |
+| `--max-turns` | no | Max escalation turns (default `7`) |
+| `--max-backtracks` | no | Backtrack attempts (default `4`) |
+| `--memory-labels-json` | no | JSON object of string labels for memory |
+| `--scorer-preset` | no | `self-ask-tf` (default) or `self-ask-refusal` |
+| `--true-description` | with `self-ask-tf` | Criterion for scorer True |
+| `--refusal-mode` | no | `default` or `strict` for refusal preset |
+| `--scorer-chat-target` | no | Scorer LLM `<provider>:<model>`; default = adversarial target |
+| `--request-converter` | no | Repeatable stateless converter keys (order matters) |
+| `--response-converter` | no | Repeatable response-side converter keys |
+| `--include-adversarial-conversation` | flag | Print red-team transcript (default on) |
+| `--include-pruned-conversations` | flag | Print discarded/backtracked paths (default on) |
+
+**Run summary**  
+After the printed Crescendo report, the CLI emits the same **Run summary** footer (**n=1**). The note reflects **`--scorer-preset`** semantics.
+
+### Example (same target for victim and adversary)
+
+```bash
+pyrit-cli redteam crescendo-attack \
+  --objective-target openai:gpt-4o-mini \
+  --objective "Benign lab objective text." \
+  --true-description "Criterion for success in plain language." \
+  --max-turns 7 \
+  --max-backtracks 4
+```
+
+### Example (local adversary, cloud victim)
+
+```bash
+pyrit-cli redteam crescendo-attack \
+  --objective-target openai:gpt-4o-mini \
+  --adversarial-target ollama:llama3.2 \
+  --objective "Benign lab objective text." \
+  --true-description "Criterion for success in plain language." \
+  --max-turns 6 \
+  --max-backtracks 3
+```
+
+---
+
 ## Limitations (vs full PyRIT)
 
 Not exposed in the CLI today (use Python / notebooks for these):
@@ -785,6 +872,7 @@ Not exposed in the CLI today (use Python / notebooks for these):
 - **`HTTPTarget`** is only wired for **`prompt-sending-attack`** and **`red-teaming-attack`** (victim **`http`** or an **http(s) URL** + `--http-*` flags). Other non-chat victims (`AzureMLChatTarget`, `TextTarget`, `OpenAIImageTarget`, …) and advanced HTTP flows still need Python.
 - **LLM-backed** prompt converters.
 - **`tap-attack`**: no `--request-converter` / `--response-converter` wiring yet (use Python for `AttackConverterConfig`). No **`--jailbreak-template`** on TAP in the CLI yet.
+- **`crescendo-attack`**: no HTTP victim path in CLI; use chat targets only.
 - **`datasets inspect`**: previews only (text truncation); does not run attacks. Registered built-ins may download/cache on first fetch (same as PyRIT `SeedDatasetProvider`).
 - **`jailbreak-templates inspect`**: previews only (metadata + truncated rendered system prompt); does not call a model.
 - **`scorers eval`**: only **`self-ask-tf`** and **`self-ask-refusal`** (same as **`red-teaming-attack`** presets). **Classification** and **Azure Content Safety** scorers stay in Python.
@@ -802,6 +890,7 @@ pyrit-cli redteam --help
 pyrit-cli redteam prompt-sending-attack --help
 pyrit-cli redteam red-teaming-attack --help
 pyrit-cli redteam tap-attack --help
+pyrit-cli redteam crescendo-attack --help
 pyrit-cli scorers eval --help
 pyrit-cli ask-ai --help
 pyrit-cli datasets list --help

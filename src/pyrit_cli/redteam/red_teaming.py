@@ -19,7 +19,9 @@ from pyrit.executor.attack import (
 from pyrit.prompt_normalizer import PromptConverterConfiguration
 from pyrit.setup import IN_MEMORY, initialize_pyrit_async
 
+from pyrit_cli.redteam.attack_run_summary import print_attack_run_summary
 from pyrit_cli.redteam.jailbreak_prepended import build_jailbreak_prepended_conversation
+from pyrit_cli.redteam.multimodal_input import build_seed_group, target_supports_image_input, validate_image_paths
 from pyrit_cli.redteam.http_target_cli import (
     build_http_json_escape_converter_config,
     build_http_objective_target,
@@ -141,6 +143,8 @@ async def run_red_teaming_async(
     http_model_name: str = "",
     jailbreak_template: str | None = None,
     jailbreak_template_params: list[str] | None = None,
+    input_images: list[str] | None = None,
+    input_text: str | None = None,
 ) -> None:
     await initialize_pyrit_async(memory_db_type=IN_MEMORY)  # type: ignore[arg-type]
 
@@ -214,12 +218,27 @@ async def run_red_teaming_async(
         kwargs["memory_labels"] = memory_labels
     if prepended:
         kwargs["prepended_conversation"] = prepended
+    images = validate_image_paths(list(input_images or []))
+    has_multimodal = bool(images) or bool((input_text or "").strip())
+    if has_multimodal:
+        if not target_supports_image_input(objective_target):
+            raise ValueError(
+                "Objective target does not appear to support image input. Use a vision-capable target or remove --input-image."
+            )
+        seed_group = build_seed_group(input_text=input_text, input_images=images)
+        kwargs["next_message"] = seed_group.next_message
 
     result = await attack.execute_async(**kwargs)  # type: ignore[misc]
     printer = ConsoleAttackResultPrinter()
     await printer.print_result_async(
         result,
         include_adversarial_conversation=include_adversarial_conversation,
+    )
+
+    print_attack_run_summary(
+        [result],
+        command="red-teaming-attack",
+        scorer_preset=scorer_preset,
     )
 
 

@@ -108,7 +108,7 @@ If you used an **OpenAI-compatible** wizard (e.g. Groq), the model id in `openai
 | **Setup** | `pyrit-cli setup`, `setup guide`, `setup configure` |
 | **Tool lifecycle** | `pyrit-cli uv-install`, `pyrit-cli uv-update` |
 | **Help via LLM** | `pyrit-cli ask-ai "…"` (optional `--http-request-file` / `--http-response-sample`) |
-| **Discover** | `targets list`, `datasets list`, `datasets inspect`, `converters list`, `converters list-keys`, `converters run`, `jailbreak-templates list`, `scorers list` |
+| **Discover** | `targets list`, `datasets list`, `datasets inspect`, `converters list`, `converters list-keys`, `converters run`, `converters image ...`, `jailbreak-templates list`, `scorers list` |
 | **Red team** | `redteam prompt-sending-attack`, `redteam red-teaming-attack`, `redteam tap-attack` |
 
 ### Stateless converters on arbitrary text
@@ -120,6 +120,14 @@ pyrit-cli converters run -c rot13 "Hello"
 echo "plain" | pyrit-cli converters run -c base64
 ```
 
+### Image converters (CLI wrappers)
+
+```bash
+pyrit-cli converters image list-keys
+pyrit-cli converters image qrcode "https://example.org/lab-note"
+pyrit-cli converters image compress --input ./in.png --quality 60
+```
+
 ### Jailbreak template names (for Python / PyRIT)
 
 Lists YAML basenames used with `pyrit.datasets.TextJailBreak`:
@@ -129,7 +137,16 @@ pyrit-cli jailbreak-templates list
 pyrit-cli jailbreak-templates list --json
 ```
 
-Image and LLM-backed converters are **not** run through this CLI; use PyRIT in Python (see [HELP.md](src/pyrit_cli/HELP.md)).
+LLM-backed converters are **not** run through this CLI; use PyRIT in Python (see [HELP.md](src/pyrit_cli/HELP.md)).
+
+Image files can be attached to red-team commands with:
+
+```bash
+pyrit-cli redteam prompt-sending-attack \
+  --target openai:gpt-4o-mini \
+  --objective "Describe what is visible in the image." \
+  --input-image ./sample.png
+```
 
 ### Local Ollama (example)
 
